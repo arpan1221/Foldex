@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Node, Edge } from 'reactflow';
+import { useState, useCallback, useMemo } from 'react';
+import { Node } from 'reactflow';
 import { KnowledgeGraphNode, KnowledgeGraphEdge, Relationship } from '../services/types';
 import { folderService } from '../services/api';
 

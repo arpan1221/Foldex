@@ -111,6 +111,11 @@ class DatabaseSessionManager:
             await session.commit()
         except Exception as e:
             await session.rollback()
+            # Don't wrap exceptions that are already FoldexExceptions or HTTPExceptions
+            from app.core.exceptions import FoldexException
+            from fastapi import HTTPException
+            if isinstance(e, (FoldexException, HTTPException)):
+                raise
             logger.error("Database session error", error=str(e), exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}") from e
         finally:
@@ -169,10 +174,12 @@ def get_database_url() -> str:
     db_path = settings.DATABASE_PATH
     if not db_path.startswith("sqlite"):
         # Add sqlite+aiosqlite:// prefix for async SQLite
-        if db_path.startswith("./") or not db_path.startswith("/"):
-            db_path = f"sqlite+aiosqlite:///{db_path}"
+        # For absolute paths, need 4 slashes: sqlite+aiosqlite:////path
+        # For relative paths, need 3 slashes: sqlite+aiosqlite:///path
+        if db_path.startswith("/"):
+            db_path = f"sqlite+aiosqlite:////{db_path}"
         else:
-            db_path = f"sqlite+aiosqlite://{db_path}"
+            db_path = f"sqlite+aiosqlite:///{db_path}"
     return db_path
 
 

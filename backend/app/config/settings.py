@@ -64,10 +64,10 @@ class Settings(BaseSettings):
 
     # Local LLM Configuration (Ollama)
     OLLAMA_BASE_URL: str = Field(
-        default="http://localhost:11434", description="Ollama API base URL"
+        default="http://ollama:11434", description="Ollama API base URL (use 'ollama' for Docker, 'localhost' for local)"
     )
     OLLAMA_MODEL: str = Field(
-        default="llama3.2", description="Ollama model name"
+        default="qwen2.5:1.5b", description="Ollama model name (use qwen2.5:1.5b, qwen2.5:4b, or qwen3:4b for local-first)"
     )
     OLLAMA_TIMEOUT: int = Field(
         default=300, description="Ollama request timeout in seconds"
@@ -118,6 +118,26 @@ class Settings(BaseSettings):
     )
     MAX_FILE_SIZE_MB: int = Field(
         default=100, ge=1, description="Maximum file size in MB"
+    )
+
+    # TTFT (Time-To-First-Token) Optimization
+    ENABLE_TTFT_OPTIMIZATION: bool = Field(
+        default=True, description="Enable TTFT optimization techniques"
+    )
+    ENABLE_PROMPT_CACHE: bool = Field(
+        default=True, description="Enable prompt caching to reduce TTFT"
+    )
+    PROMPT_CACHE_SIZE: int = Field(
+        default=100, ge=10, le=1000, description="Maximum size of prompt cache"
+    )
+    PROMPT_CACHE_TTL: int = Field(
+        default=3600, ge=60, description="Prompt cache TTL in seconds"
+    )
+    MAX_CONTEXT_CHARS: int = Field(
+        default=6000, ge=1000, le=20000, description="Maximum characters in context window"
+    )
+    ENABLE_MODEL_WARMUP: bool = Field(
+        default=True, description="Pre-warm model on startup to reduce first-request latency"
     )
 
     # Storage Paths

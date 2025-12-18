@@ -5,8 +5,10 @@ import MainLayout from './components/layout/MainLayout';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import ProtectedRoute from './components/common/ProtectedRoute';
 import GoogleAuth from './components/auth/GoogleAuth';
+import OAuthCallback from './components/auth/OAuthCallback';
 import FolderInput from './components/folder/FolderInput';
 import ChatInterface from './components/chat/ChatInterface';
+import { systemService } from './services/api';
 
 /**
  * App Component
@@ -15,13 +17,27 @@ import ChatInterface from './components/chat/ChatInterface';
  * Includes error boundaries and protected routes.
  */
 const App: React.FC = () => {
+  // Check API health on mount
+  React.useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        await systemService.healthCheck();
+      } catch (error) {
+        console.warn('API health check failed:', error);
+        // Don't block app, just log warning
+      }
+    };
+    checkHealth();
+  }, []);
+
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <Router>
+        <Router future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
           <Routes>
             {/* Public Routes */}
             <Route path="/" element={<GoogleAuth />} />
+            <Route path="/auth/callback" element={<OAuthCallback />} />
 
             {/* Protected Routes */}
             <Route
@@ -29,17 +45,21 @@ const App: React.FC = () => {
               element={
                 <ProtectedRoute>
                   <MainLayout>
-                    <FolderInput />
+                    <ErrorBoundary>
+                      <FolderInput />
+                    </ErrorBoundary>
                   </MainLayout>
                 </ProtectedRoute>
               }
             />
             <Route
-              path="/chat/:folderId"
+              path="/chat/:folderId/:conversationId?"
               element={
                 <ProtectedRoute>
                   <MainLayout>
-                    <ChatInterface />
+                    <ErrorBoundary>
+                      <ChatInterface />
+                    </ErrorBoundary>
                   </MainLayout>
                 </ProtectedRoute>
               }

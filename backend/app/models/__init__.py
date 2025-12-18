@@ -2,7 +2,7 @@
 
 from app.models.documents import DocumentChunk, FileMetadata
 from app.models.chat import ChatMessage, Conversation
-from app.models.auth import User, Token
+from app.models.auth import User, TokenRequest, TokenResponse, RefreshTokenRequest, RefreshTokenResponse
 
 __all__ = [
     "DocumentChunk",
@@ -10,6 +10,9 @@ __all__ = [
     "ChatMessage",
     "Conversation",
     "User",
-    "Token",
+    "TokenRequest",
+    "TokenResponse",
+    "RefreshTokenRequest",
+    "RefreshTokenResponse",
 ]
 

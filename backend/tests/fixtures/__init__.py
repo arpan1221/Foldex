@@ -1,2 +1,1 @@
-"""Test fixtures package."""
-
+"""Test fixtures and sample data."""

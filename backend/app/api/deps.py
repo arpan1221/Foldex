@@ -9,7 +9,7 @@ from app.core.auth import verify_token
 from app.core.exceptions import AuthenticationError
 from app.database.base import get_db_manager, DatabaseSessionManager
 from app.database.sqlite_manager import SQLiteManager
-from app.database.vector_store import VectorStore
+from app.rag.vector_store import LangChainVectorStore
 
 security = HTTPBearer()
 
@@ -40,13 +40,13 @@ def get_sqlite_manager() -> SQLiteManager:
     return SQLiteManager()
 
 
-def get_vector_store() -> VectorStore:
-    """Dependency for vector store.
+def get_vector_store() -> LangChainVectorStore:
+    """Dependency for LangChain vector store.
 
     Returns:
-        VectorStore instance
+        LangChainVectorStore instance
     """
-    return VectorStore()
+    return LangChainVectorStore()
 
 
 async def get_current_user(

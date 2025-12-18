@@ -13,6 +13,7 @@ from app.config.settings import settings
 from app.config.logging import setup_logging, get_logger
 from app.core.exceptions import FoldexException
 from app.database.base import initialize_database, close_database
+from app.startup import startup_warmup
 
 
 # Initialize logging before creating app
@@ -51,6 +52,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error("Database initialization failed", error=str(e), exc_info=True)
         raise
+
+    # Run startup warmup (TTFT optimization + model pre-warming)
+    try:
+        await startup_warmup()
+        logger.info("Startup warmup completed successfully")
+    except Exception as e:
+        # Don't fail startup, just log warning
+        logger.warning("Startup warmup failed", error=str(e), exc_info=True)
 
     yield
 

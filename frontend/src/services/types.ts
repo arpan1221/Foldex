@@ -43,6 +43,7 @@ export interface Conversation {
   conversation_id: string;
   user_id: string;
   folder_id?: string;
+  title: string;
   created_at: Date | string;
   updated_at: Date | string;
   messages?: ChatMessage[];
@@ -60,31 +61,60 @@ export interface FileMetadata {
   folder_id?: string;
   created_at?: Date | string;
   modified_at?: Date | string;
+  web_view_link?: string;
+  web_content_link?: string;
+  is_folder?: boolean;
+}
+
+export interface TreeNode {
+  id: string;
+  name: string;
+  is_folder: boolean;
+  mime_type: string;
+  size: number;
+  created_at?: Date | string;
+  modified_at?: Date | string;
+  web_view_link?: string;
+  web_content_link?: string;
+  children: TreeNode[];
 }
 
 export interface FolderMetadata {
   folder_id: string;
   folder_name: string;
   file_count: number;
-  total_size: number;
+  folder_count: number;
+  total_size?: number;
+  status?: string;
   created_at?: Date | string;
   modified_at?: Date | string;
+  updated_at?: Date | string;
+  web_view_link?: string;
 }
 
 export interface ProcessFolderRequest {
   folder_id: string;
+  folder_url?: string;
 }
 
 export interface ProcessFolderResponse {
   folder_id: string;
   status: 'processing' | 'completed' | 'failed';
   message: string;
-  files_processed?: number;
-  total_files?: number;
+  files_detected?: number;
+}
+
+export interface FolderStatusResponse {
+  folder_id: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  files_processed: number;
+  total_files: number;
+  progress: number; // 0.0 to 1.0
+  error?: string;
 }
 
 export interface ProcessingStatus {
-  type: 'processing_started' | 'file_processed' | 'processing_complete' | 'processing_error';
+  type: 'processing_started' | 'files_detected' | 'file_processing' | 'file_processed' | 'file_error' | 'building_graph' | 'graph_complete' | 'processing_complete' | 'processing_error' | 'connected' | 'pong' | 'status' | 'error' | 'folder_structure' | 'folder_discovered' | 'folder_completed';
   message?: string;
   progress?: number; // 0.0 to 1.0
   file_name?: string;
@@ -92,7 +122,17 @@ export interface ProcessingStatus {
   folder_id?: string;
   files_processed?: number;
   total_files?: number;
+  failed_files?: number;
+  file_index?: number;
   error?: string;
+  timestamp?: string;
+  folder_name?: string;
+  total_subfolders?: number;
+  subfolders?: any[];
+  folders?: any[];
+  file_path?: string;
+  parent_folder_id?: string;
+  [key: string]: any;
 }
 
 // ============================================================================
@@ -103,16 +143,43 @@ export interface User {
   user_id: string;
   email: string;
   name?: string;
-  google_id?: string;
+  picture?: string;
+  verified_email?: boolean;
 }
 
 export interface TokenRequest {
-  access_token: string;
+  google_token: string;
 }
 
 export interface TokenResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: 'bearer';
+  expires_in: number;
+}
+
+export interface RefreshTokenRequest {
+  refresh_token: string;
+}
+
+export interface RefreshTokenResponse {
+  access_token: string;
+  token_type: 'bearer';
+  refresh_token?: string;
+}
+
+export interface RefreshTokenResponse {
+  access_token: string;
+  token_type: 'bearer';
+  expires_in: number;
+}
+
+export interface UserResponse {
+  user_id: string;
+  email: string;
+  name?: string;
+  picture?: string;
+  verified_email: boolean;
 }
 
 // ============================================================================
@@ -140,13 +207,20 @@ export interface KnowledgeGraphEdge {
   confidence: number;
 }
 
+export interface KnowledgeGraphResponse {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  relationships: Relationship[];
+}
+
 // ============================================================================
 // API Response Types
 // ============================================================================
 
 export interface APIError {
   error: string;
-  error_type: string;
+  error_type?: string;
+  detail?: string;
   details?: Record<string, unknown>;
 }
 
@@ -166,7 +240,7 @@ export interface WebSocketMessage {
 }
 
 export interface ProcessingUpdateMessage extends WebSocketMessage {
-  type: 'processing_started' | 'file_processed' | 'processing_complete' | 'processing_error';
+  type: 'processing_started' | 'file_processed' | 'processing_complete' | 'processing_error' | 'files_detected' | 'file_processing' | 'file_error' | 'building_graph' | 'graph_complete';
   folder_id: string;
   message?: string;
   progress?: number;
@@ -174,6 +248,25 @@ export interface ProcessingUpdateMessage extends WebSocketMessage {
   file_id?: string;
   files_processed?: number;
   total_files?: number;
+  failed_files?: number;
   error?: string;
+  timestamp?: string;
 }
 
+// ============================================================================
+// API Request/Response Helpers
+// ============================================================================
+
+export interface APIResponse<T = any> {
+  data: T;
+  status: number;
+  statusText: string;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}

@@ -8,6 +8,8 @@ from app.models.documents import DocumentChunk
 from app.processors.base import BaseProcessor
 from app.processors.pdf_processor import PDFProcessor
 from app.processors.text_processor import TextProcessor
+from app.processors.audio_processor import AudioProcessor
+from app.processors.code_processor import CodeProcessor
 from app.core.exceptions import DocumentProcessingError
 from app.utils.file_utils import get_mime_type, validate_file_size, extract_file_metadata
 
@@ -26,7 +28,8 @@ class DocumentProcessor:
         self.processors: List[BaseProcessor] = [
             PDFProcessor(),
             TextProcessor(),
-            # AudioProcessor and CodeProcessor can be added later
+            AudioProcessor(),
+            CodeProcessor(),
         ]
         self.logger = structlog.get_logger(__name__)
 

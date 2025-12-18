@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFolderProcessor } from '../../hooks/useFolderProcessor';
-import ProcessingStatus from './ProcessingStatus';
+import { chatService, APIException } from '../../services/api';
+import FolderUploadInterface from './FolderUploadInterface';
 import FileOverview from './FileOverview';
 import { isValidGoogleDriveUrl, extractFolderId } from '../../utils/validators';
 
@@ -12,11 +13,12 @@ import { isValidGoogleDriveUrl, extractFolderId } from '../../utils/validators';
  * Follows Figma wireframe design with dark gradient background.
  */
 const FolderInput: React.FC = () => {
+  const navigate = useNavigate();
   const [folderUrl, setFolderUrl] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState(false);
+  const [processedFolderId, setProcessedFolderId] = useState<string | null>(null);
   const { processFolder, isProcessing, status, error, files } = useFolderProcessor();
-  const navigate = useNavigate();
 
   // Validate URL on change
   useEffect(() => {
@@ -31,6 +33,30 @@ const FolderInput: React.FC = () => {
       setValidationError(null);
     }
   }, [folderUrl, isValidating]);
+
+  // Auto-navigate to chat when processing completes
+  useEffect(() => {
+    if (status?.type === 'processing_complete' && processedFolderId) {
+      console.log('Processing complete, will navigate in 3 seconds');
+
+      // Wait 3 seconds to show completion state, then create conversation and navigate
+      const timer = setTimeout(async () => {
+        try {
+          console.log('Creating initial conversation for folder:', processedFolderId);
+          const newConv = await chatService.createConversation(processedFolderId, 'Initial Chat');
+          console.log('Navigating to chat:', processedFolderId, newConv.conversation_id);
+          navigate(`/chat/${processedFolderId}/${newConv.conversation_id}`);
+        } catch (err) {
+          console.error('Failed to create initial conversation, navigating anyway:', err);
+          navigate(`/chat/${processedFolderId}`);
+        }
+      }, 3000);  // Increased to 3 seconds to ensure UI is visible
+
+      return () => clearTimeout(timer);
+    }
+    // Only depend on status.type, not the entire status object to prevent timer resets
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.type, processedFolderId, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,16 +78,15 @@ const FolderInput: React.FC = () => {
         return;
       }
 
-      // Start processing
+      // Start processing and store folder ID for auto-navigation
+      setProcessedFolderId(folderId);
       await processFolder(folderId);
-      
-      // Navigate to chat after processing starts
-      // (Processing will continue in background)
-      setTimeout(() => {
-        navigate(`/chat/${folderId}`);
-      }, 1000);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to process folder';
+      const errorMessage = err instanceof APIException 
+        ? err.message 
+        : err instanceof Error 
+        ? err.message 
+        : 'Failed to process folder';
       setValidationError(errorMessage);
       setIsValidating(false);
     }
@@ -85,9 +110,9 @@ const FolderInput: React.FC = () => {
         {/* Header */}
         <div className="text-center space-y-4">
           <div className="flex items-center justify-center">
-            <div className="w-16 h-16 bg-gradient-to-br from-foldex-primary-500 to-foldex-accent-500 rounded-2xl flex items-center justify-center shadow-lg">
+            <div className="w-16 h-16 bg-gray-700 rounded-2xl flex items-center justify-center shadow-lg">
               <svg
-                className="w-9 h-9 text-white"
+                className="w-9 h-9 text-gray-300"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth={1.5}
@@ -146,7 +171,7 @@ const FolderInput: React.FC = () => {
                     w-full pl-10 pr-12 py-3
                     bg-gray-900 border-2 rounded-lg
                     text-gray-100 placeholder:text-gray-500
-                    focus:outline-none focus:ring-2 focus:ring-foldex-primary-500 focus:border-transparent
+                    focus:outline-none focus:ring-2 focus:ring-gray-600 focus:border-transparent
                     transition-all
                     ${validationError ? 'border-red-500' : 'border-gray-600'}
                     ${isProcessing || isValidating ? 'opacity-50 cursor-not-allowed' : ''}
@@ -156,7 +181,7 @@ const FolderInput: React.FC = () => {
                 <button
                   type="button"
                   onClick={handlePaste}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-foldex-primary-400 hover:text-foldex-primary-300 transition-colors"
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-300 hover:text-gray-200 transition-colors"
                   disabled={isProcessing || isValidating}
                 >
                   Paste
@@ -210,12 +235,11 @@ const FolderInput: React.FC = () => {
               disabled={isProcessing || isValidating || !!validationError || !folderUrl.trim()}
               className={`
                 w-full py-3 px-6 rounded-lg font-medium text-base
-                bg-gradient-to-r from-foldex-primary-600 to-foldex-accent-600
-                hover:from-foldex-primary-700 hover:to-foldex-accent-700
+                bg-gray-700 hover:bg-gray-600
                 text-white
                 transition-all duration-200
                 disabled:opacity-50 disabled:cursor-not-allowed
-                disabled:hover:from-foldex-primary-600 disabled:hover:to-foldex-accent-600
+                disabled:hover:bg-gray-700
                 flex items-center justify-center gap-2
                 shadow-lg hover:shadow-xl
               `}
@@ -266,7 +290,7 @@ const FolderInput: React.FC = () => {
           </form>
 
           {/* Example URL */}
-          <div className="mt-6 p-4 bg-foldex-primary-950/30 rounded-lg border border-foldex-primary-800/50">
+          <div className="mt-6 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
             <p className="text-sm text-gray-400 mb-2">
               <span className="font-medium text-gray-200">Example:</span>
             </p>
@@ -276,9 +300,9 @@ const FolderInput: React.FC = () => {
           </div>
         </div>
 
-        {/* Processing Status */}
-        {isProcessing && status && (
-          <ProcessingStatus status={status} error={error} />
+        {/* Processing Status - Floating Google Drive-like Interface */}
+        {(isProcessing || status) && status && (
+          <FolderUploadInterface status={status} error={error} />
         )}
 
         {/* File Overview */}

@@ -39,7 +39,7 @@ interface ConnectionOptions {
 class WebSocketService {
   private connections: Map<string, WebSocket> = new Map();
   private handlers: Map<string, MessageHandler[]> = new Map();
-  private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+  private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private reconnectAttempts: Map<string, number> = new Map();
   private connectionOptions: Map<string, ConnectionOptions> = new Map();
 
@@ -91,7 +91,7 @@ class WebSocketService {
    */
   private _connect(folderId: string): void {
     const options = this.connectionOptions.get(folderId) || {};
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
+    const wsUrl = (import.meta.env?.VITE_WS_URL as string) || 'ws://localhost:8000';
     
     // Get auth token
     const token = localStorage.getItem('access_token');

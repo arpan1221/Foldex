@@ -8,9 +8,16 @@
   font-weight: 400;
 }
 
+html {
+  background: linear-gradient(to bottom right, rgb(3, 7, 18), rgb(17, 24, 39), rgb(3, 7, 18));
+  min-height: 100vh;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  background: linear-gradient(to bottom right, rgb(3, 7, 18), rgb(17, 24, 39), rgb(3, 7, 18));
+  color: rgb(243, 244, 246);
 }
 
 /* Animations */
@@ -27,5 +34,39 @@ body {
 
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.4s ease-out;
+}
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgb(31, 41, 55);
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgb(75, 85, 99);
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgb(107, 114, 128);
 }
 

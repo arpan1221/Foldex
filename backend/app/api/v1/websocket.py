@@ -1,5 +1,6 @@
 """WebSocket endpoints for real-time processing updates with authentication."""
 
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
 from fastapi.exceptions import WebSocketException
 from typing import Dict, Set, Optional
@@ -209,63 +210,92 @@ async def websocket_endpoint(
             "timestamp": datetime.utcnow().isoformat(),
         })
 
-        # Keep connection alive and handle incoming messages
-        while True:
+        # Create tasks for keepalive and message handling
+        async def send_keepalive():
+            """Send periodic keepalive pings to prevent connection timeout."""
             try:
-                # Wait for messages (ping/pong for keepalive)
-                data = await websocket.receive_text()
-                
-                try:
-                    message = json.loads(data)
-                    message_type = message.get("type")
+                while True:
+                    await asyncio.sleep(15)  # Send ping every 15 seconds
+                    try:
+                        await websocket.send_json({
+                            "type": "ping",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+                    except Exception as e:
+                        logger.debug(f"Keepalive ping failed: {e}")
+                        break
+            except asyncio.CancelledError:
+                pass
 
-                    if message_type == "ping":
-                        # Respond to ping
-                        await websocket.send_json({
-                            "type": "pong",
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-                    elif message_type == "get_status":
-                        # Send current status (if available)
-                        await websocket.send_json({
-                            "type": "status",
-                            "folder_id": folder_id,
-                            "message": "Status request received",
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-                    else:
-                        # Echo unknown messages
-                        await websocket.send_json({
-                            "type": "message_received",
-                            "original_type": message_type,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-                except json.JSONDecodeError:
-                    # Non-JSON message, just echo
-                    await websocket.send_json({
-                        "type": "echo",
-                        "data": data,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    })
+        async def handle_messages():
+            """Handle incoming messages from client."""
+            try:
+                while True:
+                    data = await websocket.receive_text()
 
+                    try:
+                        message = json.loads(data)
+                        message_type = message.get("type")
+
+                        if message_type == "ping":
+                            # Respond to client ping
+                            await websocket.send_json({
+                                "type": "pong",
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                        elif message_type == "get_status":
+                            # Send current status (if available)
+                            await websocket.send_json({
+                                "type": "status",
+                                "folder_id": folder_id,
+                                "message": "Status request received",
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                        else:
+                            # Echo unknown messages
+                            await websocket.send_json({
+                                "type": "message_received",
+                                "original_type": message_type,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                    except json.JSONDecodeError:
+                        # Non-JSON message, just echo
+                        await websocket.send_json({
+                            "type": "echo",
+                            "data": data,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
             except WebSocketDisconnect:
-                break
+                pass
             except Exception as e:
                 logger.warning(
                     "WebSocket message handling error",
                     folder_id=folder_id,
                     error=str(e),
                 )
-                # Send error to client
+
+        # Run both tasks concurrently
+        keepalive_task = asyncio.create_task(send_keepalive())
+        message_task = asyncio.create_task(handle_messages())
+
+        try:
+            # Wait for either task to complete (disconnection or error)
+            done, pending = await asyncio.wait(
+                {keepalive_task, message_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
                 try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Message handling error: {str(e)}",
-                        "timestamp": datetime.utcnow().isoformat(),
-                    })
-                except Exception:
-                    # Connection might be closed
-                    break
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        except Exception as e:
+            logger.error(f"WebSocket task error: {e}")
+            keepalive_task.cancel()
+            message_task.cancel()
 
     except WebSocketException:
         # Authentication or policy violation

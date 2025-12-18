@@ -1,6 +1,25 @@
-version: '3.8'
-
 services:
+  # ChromaDB Service
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: foldex-chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadb-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - foldex-network
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8000' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Backend Service
   backend:
     build:
       context: ./backend
@@ -12,35 +31,53 @@ services:
       - ./backend:/app
       - ./data:/app/data
       - ./models:/app/models
+      - foldex-cache:/app/data/cache
     environment:
       - APP_ENV=development
+      - DEBUG=true
       - DATABASE_PATH=/app/data/foldex.db
       - VECTOR_DB_PATH=/app/data/vector_db
       - CACHE_DIR=/app/data/cache
+      - KNOWLEDGE_GRAPH_DIR=/app/data/knowledge_graphs
+      - SESSIONS_DIR=/app/data/sessions
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - SECRET_KEY=${SECRET_KEY:-7d41abbf1e7f065fa34d9b8bac82c7fc554a0edf1fbeb417a3aac9932c05a33c}
     env_file:
       - .env
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app --ws-ping-interval 20 --ws-ping-timeout 30 --timeout-keep-alive 75
+    depends_on:
+      chromadb:
+        condition: service_healthy
     networks:
       - foldex-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # Frontend Service
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: foldex-frontend
     ports:
       - "3000:3000"
     volumes:
-      - ./frontend:/app
+      - ./frontend:/app:cached
       - /app/node_modules
-    environment:
-      - REACT_APP_API_BASE_URL=http://localhost:8000
-      - REACT_APP_WS_URL=ws://localhost:8000/ws
+    env_file:
+      - ./frontend/.env
     depends_on:
       - backend
     networks:
       - foldex-network
+    command: npm run dev -- --host 0.0.0.0
 
+  # Ollama Service (Local LLM)
   ollama:
     image: ollama/ollama:latest
     container_name: foldex-ollama
@@ -50,11 +87,23 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - foldex-network
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/11434' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 networks:
   foldex-network:
     driver: bridge
 
 volumes:
+  chromadb-data:
+    driver: local
   ollama-data:
-
+    driver: local
+  foldex-cache:
+    driver: local

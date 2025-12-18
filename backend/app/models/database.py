@@ -48,7 +48,7 @@ class ChunkRecord(Base):
     chunk_id = Column(String, primary_key=True, index=True)
     file_id = Column(String, ForeignKey("files.file_id"), nullable=False, index=True)
     content = Column(Text, nullable=False)
-    metadata = Column(JSON, default=dict)
+    chunk_metadata = Column(JSON, default=dict, name="metadata")  # Use name="metadata" for DB column
     embedding = Column(BLOB, nullable=True)  # Embeddings stored in vector DB
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -64,6 +64,7 @@ class ConversationRecord(Base):
     conversation_id = Column(String, primary_key=True, index=True)
     user_id = Column(String, nullable=False, index=True)
     folder_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=True)  # Added title for UI
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -102,6 +103,26 @@ class UserRecord(Base):
     google_id = Column(String, nullable=True, unique=True, index=True)
     picture = Column(String, nullable=True)
     verified_email = Column(Boolean, default=False)
+    google_access_token = Column(String, nullable=True)  # Store Google OAuth token
+    google_refresh_token = Column(String, nullable=True)  # Store Google refresh token
+    google_token_expiry = Column(DateTime, nullable=True)  # Token expiration time
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FolderRecord(Base):
+    """SQLAlchemy model for folders."""
+
+    __tablename__ = "folders"
+
+    folder_id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    folder_name = Column(String, nullable=False)
+    folder_url = Column(String, nullable=True)
+    parent_folder_id = Column(String, nullable=True, index=True)  # Parent folder ID for hierarchy
+    root_folder_id = Column(String, nullable=True, index=True)  # Root folder ID (top-level folder)
+    file_count = Column(Integer, default=0)
+    status = Column(String, nullable=False, default="processing")  # processing, completed, failed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -154,6 +175,7 @@ class ConversationModel(BaseModel):
     conversation_id: str = Field(..., description="Unique conversation identifier")
     user_id: str = Field(..., description="User identifier")
     folder_id: Optional[str] = Field(None, description="Associated folder ID")
+    title: Optional[str] = Field(None, description="Conversation title")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

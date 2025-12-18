@@ -1,0 +1,13 @@
+This is a sample text document for testing purposes.
+
+It contains multiple paragraphs to test text processing and chunking functionality.
+
+The document includes:
+- Bullet points
+- Multiple sentences
+- Various punctuation marks!
+
+This paragraph tests the chunking algorithm with longer content that should be split appropriately based on the configured chunk size and overlap settings.
+
+Finally, this is the last paragraph of the sample document.
+

@@ -111,7 +111,7 @@ const InputArea: React.FC<InputAreaProps> = ({
                   text-gray-100
                   placeholder:text-gray-500
                   resize-none
-                  focus:outline-none focus:ring-2 focus:ring-foldex-primary-500 focus:border-transparent
+                  focus:outline-none focus:ring-2 focus:ring-gray-600 focus:border-transparent
                   transition-all
                   disabled:opacity-50 disabled:cursor-not-allowed
                   max-h-[200px] overflow-y-auto
@@ -137,15 +137,14 @@ const InputArea: React.FC<InputAreaProps> = ({
                 flex-shrink-0
                 h-12 w-12
                 rounded-lg
-                bg-gradient-to-r from-foldex-primary-600 to-foldex-accent-600
-                hover:from-foldex-primary-700 hover:to-foldex-accent-700
+                bg-gray-700 hover:bg-gray-600
                 text-white
                 flex items-center justify-center
                 transition-all duration-200
                 disabled:opacity-50 disabled:cursor-not-allowed
-                disabled:hover:from-foldex-primary-600 disabled:hover:to-foldex-accent-600
+                disabled:hover:bg-gray-700
                 shadow-lg hover:shadow-xl
-                focus:outline-none focus:ring-2 focus:ring-foldex-primary-500 focus:ring-offset-2 focus:ring-offset-gray-900
+                focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-gray-900
               `}
               title="Send message (Enter)"
             >

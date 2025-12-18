@@ -10,9 +10,20 @@ from app.services.google_drive import GoogleDriveService
 from app.services.document_processor import DocumentProcessor
 from app.services.knowledge_graph import KnowledgeGraphService
 from app.database.sqlite_manager import SQLiteManager
-from app.database.vector_store import VectorStore
+from app.rag.vector_store import LangChainVectorStore
 from app.api.v1.websocket import manager
 from app.utils.cache import FileCache, Cache
+
+try:
+    from langchain_core.documents import Document
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    try:
+        from langchain.schema import Document
+        LANGCHAIN_AVAILABLE = True
+    except ImportError:
+        LANGCHAIN_AVAILABLE = False
+        Document = None
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +47,7 @@ class FolderProcessor:
         doc_processor: Optional[DocumentProcessor] = None,
         kg_service: Optional[KnowledgeGraphService] = None,
         db: Optional[SQLiteManager] = None,
-        vector_store: Optional[VectorStore] = None,
+        vector_store: Optional[LangChainVectorStore] = None,
     ):
         """Initialize folder processor.
 
@@ -45,13 +56,13 @@ class FolderProcessor:
             doc_processor: Document processor
             kg_service: Knowledge graph service
             db: Database manager
-            vector_store: Vector store manager
+            vector_store: LangChain vector store manager
         """
         self.drive_service = drive_service or GoogleDriveService()
         self.doc_processor = doc_processor or DocumentProcessor()
         self.kg_service = kg_service or KnowledgeGraphService()
         self.db = db or SQLiteManager()
-        self.vector_store = vector_store or VectorStore()
+        self.vector_store = vector_store or LangChainVectorStore()
         self.file_cache = FileCache()
         self.status_cache = Cache()
         self._processing_tasks: Dict[str, asyncio.Task] = {}
@@ -99,9 +110,87 @@ class FolderProcessor:
             if not google_token:
                 raise AuthenticationError("Google access token required for folder processing")
 
-            # List files from Google Drive
-            files = await self.drive_service.list_folder_files(folder_id, google_token, user_id)
+            # Get folder metadata (name) from Google Drive
+            try:
+                folder_metadata = await self.drive_service.get_file_metadata(folder_id, google_token)
+                folder_name = folder_metadata.get("name", f"Folder {folder_id[:8]}")
+            except Exception as e:
+                logger.warning("Failed to get folder name, using default", folder_id=folder_id, error=str(e))
+                folder_name = f"Folder {folder_id[:8]}"
+
+            # Store folder in database with explicit root_folder_id
+            await self.db.store_folder(
+                folder_id=folder_id,
+                user_id=user_id,
+                folder_name=folder_name,
+                file_count=0,
+                status="processing",
+                parent_folder_id=None,  # Explicitly set to None for root
+                root_folder_id=folder_id,  # Explicitly set root_folder_id to itself
+            )
+
+            # List files from Google Drive (recursively including all subfolders)
+            # Create a token refresh callback to refresh token during long operations
+            async def refresh_token_callback():
+                """Refresh Google token if needed during folder traversal."""
+                from app.api.v1.folders import get_user_google_token
+                try:
+                    new_token = await get_user_google_token(user_id, None)
+                    logger.debug("Token refreshed during folder traversal", user_id=user_id)
+                    return new_token
+                except Exception as e:
+                    logger.warning("Failed to refresh token during traversal", error=str(e))
+                    return google_token  # Return original token if refresh fails
+            
+            # Get hierarchical folder structure
+            folder_structure = await self.drive_service.list_folder_files(
+                folder_id, google_token, user_id, recursive=True
+            )
+            # Handle both dict and list return types
+            if isinstance(folder_structure, dict):
+                files = folder_structure.get("files", [])
+                subfolders = folder_structure.get("subfolders", [])
+            else:
+                # Legacy list format
+                files = folder_structure if isinstance(folder_structure, list) else []
+                subfolders = []
             total_files = len(files)
+            
+            # Build folder path map for files
+            folder_path_map = self._build_folder_path_map(subfolders, folder_name)
+            
+            # Add path information to files
+            for file_info in files:
+                parent_folder_id = file_info.get("parent_folder_id", folder_id)
+                if parent_folder_id in folder_path_map:
+                    file_info["path"] = f"{folder_path_map[parent_folder_id]}/{file_info.get('name', 'Unknown')}"
+                else:
+                    file_info["path"] = file_info.get("name", "Unknown")
+            
+            logger.info(
+                "Files collected from folder",
+                folder_id=folder_id,
+                total_files=total_files,
+                total_subfolders=len(subfolders),
+                recursive=True
+            )
+            
+            # Send folder structure information
+            await manager.send_message(
+                folder_id,
+                {
+                    "type": "folder_structure",
+                    "folder_id": folder_id,
+                    "folder_name": folder_name,
+                    "total_files": total_files,
+                    "total_subfolders": len(subfolders),
+                    "subfolders": self._flatten_subfolders(subfolders),
+                    "message": f"Found {total_files} files in {len(subfolders)} subfolders",
+                },
+            )
+            
+            # Store subfolders in database with hierarchy
+            await self._store_folder_hierarchy(folder_id, user_id, subfolders)
 
             if total_files == 0:
                 await manager.send_message(
@@ -116,6 +205,16 @@ class FolderProcessor:
                     },
                 )
                 await self._update_processing_status(folder_id, ProcessingStatus.COMPLETED, user_id)
+                # Update folder record
+                await self.db.store_folder(
+                    folder_id=folder_id,
+                    user_id=user_id,
+                    folder_name=folder_name,
+                    file_count=0,
+                    status="completed",
+                    parent_folder_id=None,  # Explicitly set to None for root
+                    root_folder_id=folder_id,  # Explicitly set root_folder_id to itself
+                )
                 return
 
             await manager.send_message(
@@ -128,79 +227,187 @@ class FolderProcessor:
                 },
             )
 
-            # Process files with error recovery
+            # Process files concurrently with intelligent limits
+            # Different limits for different file types:
+            # - Small text files: 10 concurrent
+            # - PDFs/Documents: 5 concurrent
+            # - Audio/Video: 2 concurrent (larger files)
+            
+            # Categorize files by type for optimized processing
+            small_files = []  # Text, markdown, small docs
+            medium_files = []  # PDFs, Office docs
+            large_files = []  # Audio, video, large files
+            
+            for file_info in files:
+                mime_type = file_info.get("mimeType", "")
+                file_size_raw = file_info.get("size", 0)
+                
+                # Convert size to int (Google Drive API sometimes returns strings)
+                try:
+                    file_size = int(file_size_raw) if file_size_raw else 0
+                except (ValueError, TypeError):
+                    file_size = 0
+                    logger.warning(
+                        "Invalid file size, defaulting to 0",
+                        file_id=file_info.get("id"),
+                        size_value=file_size_raw,
+                    )
+                
+                # Categorize by MIME type and size
+                if mime_type.startswith(("text/", "application/json")) or file_size < 100_000:  # < 100KB
+                    small_files.append(file_info)
+                elif mime_type.startswith(("audio/", "video/")) or file_size > 10_000_000:  # > 10MB
+                    large_files.append(file_info)
+                else:
+                    medium_files.append(file_info)
+            
+            logger.info(
+                "Files categorized for processing",
+                small_files=len(small_files),
+                medium_files=len(medium_files),
+                large_files=len(large_files),
+            )
+            
+            # Create semaphores for each category
+            small_semaphore = asyncio.Semaphore(10)  # 10 concurrent small files
+            medium_semaphore = asyncio.Semaphore(5)  # 5 concurrent medium files
+            large_semaphore = asyncio.Semaphore(2)   # 2 concurrent large files
+            
             processed_count = 0
             failed_files: List[Dict[str, Any]] = []
+            processing_lock = asyncio.Lock()
 
-            for file_index, file_info in enumerate(files):
-                try:
-                    file_id = file_info.get("id")
-                    file_name = file_info.get("name", "Unknown")
+            async def process_single_file(file_info: Dict[str, Any], file_index: int, semaphore: asyncio.Semaphore) -> None:
+                """Process a single file with progress tracking.
+                
+                Args:
+                    file_info: File metadata
+                    file_index: Index in the file list
+                    semaphore: Semaphore to control concurrency for this file type
+                """
+                nonlocal processed_count
+                file_id = file_info.get("id")
+                file_name = file_info.get("name", "Unknown")
+                file_parent_folder_id = file_info.get("parent_folder_id", folder_id)
+                file_path = file_info.get("path", file_name)  # Relative path in folder hierarchy
+                
+                async with semaphore:
+                    try:
+                        # Get current progress count (lock only for reading)
+                        async with processing_lock:
+                            current_count = processed_count
 
-                    # Send file start notification
-                    await manager.send_message(
-                        folder_id,
-                        {
-                            "type": "file_processing",
-                            "folder_id": folder_id,
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "file_index": file_index + 1,
-                            "total_files": total_files,
-                            "message": f"Processing {file_name}...",
-                        },
-                    )
+                        # Send file start notification (no lock - WebSocket is thread-safe)
+                        await manager.send_message(
+                            folder_id,
+                            {
+                                "type": "file_processing",
+                                "folder_id": folder_id,
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "file_path": file_path,
+                                "parent_folder_id": file_parent_folder_id,
+                                "file_index": file_index + 1,
+                                "files_processed": current_count,  # Files completed so far
+                                "total_files": total_files,
+                                "message": f"Processing {file_path}...",
+                            },
+                        )
 
-                    # Process file with retry logic
-                    await self._process_file_with_retry(
-                        file_info, folder_id, user_id, google_token, max_retries=2
-                    )
+                        # Process file with retry logic
+                        await self._process_file_with_retry(
+                            file_info, file_parent_folder_id, user_id, google_token, max_retries=2
+                        )
 
-                    processed_count += 1
+                        # Update count (lock only for increment)
+                        async with processing_lock:
+                            processed_count += 1
+                            current_count = processed_count
+                            progress = processed_count / total_files if total_files > 0 else 0
 
-                    # Send progress update
-                    progress = processed_count / total_files if total_files > 0 else 0
-                    await manager.send_message(
-                        folder_id,
-                        {
-                            "type": "file_processed",
-                            "folder_id": folder_id,
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "files_processed": processed_count,
-                            "total_files": total_files,
-                            "progress": progress,
-                            "message": f"Processed {file_name} ({processed_count}/{total_files})",
-                        },
-                    )
+                        # Send progress update (no lock - WebSocket is thread-safe)
+                        await manager.send_message(
+                            folder_id,
+                            {
+                                "type": "file_processed",
+                                "folder_id": folder_id,
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "file_path": file_path,
+                                "parent_folder_id": file_parent_folder_id,
+                                "files_processed": current_count,
+                                "total_files": total_files,
+                                "progress": progress,
+                                "message": f"Processed {file_path} ({current_count}/{total_files})",
+                            },
+                        )
 
-                except Exception as e:
-                    logger.error(
-                        "File processing failed",
-                        file_id=file_info.get("id"),
-                        file_name=file_info.get("name"),
-                        error=str(e),
-                        exc_info=True,
-                    )
+                    except Exception as e:
+                        logger.error(
+                            "File processing failed",
+                            file_id=file_id,
+                            file_name=file_name,
+                            error=str(e),
+                            exc_info=True,
+                        )
 
-                    failed_files.append({
-                        "file_id": file_info.get("id"),
-                        "file_name": file_info.get("name"),
-                        "error": str(e),
-                    })
+                        # Update count and failed files list (lock for shared state)
+                        async with processing_lock:
+                            processed_count += 1
+                            current_count = processed_count
 
-                    # Send error notification but continue processing
-                    await manager.send_message(
-                        folder_id,
-                        {
-                            "type": "file_error",
-                            "folder_id": folder_id,
-                            "file_id": file_info.get("id"),
-                            "file_name": file_info.get("name"),
-                            "error": str(e),
-                            "message": f"Failed to process {file_info.get('name')}: {str(e)}",
-                        },
-                    )
+                            failed_files.append({
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "file_path": file_path,
+                                "error": str(e),
+                            })
+
+                        # Send error notification (no lock - WebSocket is thread-safe)
+                        await manager.send_message(
+                            folder_id,
+                            {
+                                "type": "file_error",
+                                "folder_id": folder_id,
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "file_path": file_path,
+                                "parent_folder_id": file_parent_folder_id,
+                                "files_processed": current_count,  # Include failed files in count
+                                "total_files": total_files,
+                                "error": str(e),
+                                "message": f"Failed to process {file_path}: {str(e)}",
+                            },
+                        )
+
+            # Process all files concurrently with category-specific semaphores
+            # Process in order: small files first (fastest), then medium, then large
+            # This provides better perceived performance
+            tasks = []
+            
+            # Small files (fast processing)
+            for index, file_info in enumerate(small_files):
+                tasks.append(process_single_file(file_info, index, small_semaphore))
+            
+            # Medium files
+            offset = len(small_files)
+            for index, file_info in enumerate(medium_files):
+                tasks.append(process_single_file(file_info, offset + index, medium_semaphore))
+            
+            # Large files (slowest)
+            offset = len(small_files) + len(medium_files)
+            for index, file_info in enumerate(large_files):
+                tasks.append(process_single_file(file_info, offset + index, large_semaphore))
+            
+            logger.info(
+                "Starting concurrent file processing",
+                total_tasks=len(tasks),
+                small_concurrent=10,
+                medium_concurrent=5,
+                large_concurrent=2,
+            )
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
 
             # Build knowledge graph if files were processed
             if processed_count > 0:
@@ -233,19 +440,38 @@ class FolderProcessor:
             if failed_files:
                 status_message += f", {len(failed_files)} failed"
 
-            await manager.send_message(
-                folder_id,
-                {
-                    "type": "processing_complete",
-                    "folder_id": folder_id,
-                    "files_processed": processed_count,
-                    "total_files": total_files,
-                    "failed_files": len(failed_files),
-                    "progress": 1.0,
-                    "message": status_message,
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-            )
+            completion_message = {
+                "type": "processing_complete",
+                "folder_id": folder_id,
+                "files_processed": processed_count,
+                "total_files": total_files,
+                "failed_files": len(failed_files),
+                "progress": 1.0,
+                "message": status_message,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            
+            # Send completion message multiple times to ensure delivery
+            # (in case of temporary network issues)
+            for attempt in range(3):
+                try:
+                    await manager.send_message(folder_id, completion_message)
+                    logger.info(
+                        "Completion message sent",
+                        folder_id=folder_id,
+                        attempt=attempt + 1,
+                        connections=manager.get_connection_count(folder_id),
+                    )
+                    if attempt == 0:
+                        # Wait a bit before retry to ensure first message is processed
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to send completion message",
+                        folder_id=folder_id,
+                        attempt=attempt + 1,
+                        error=str(e),
+                    )
 
             # Update status in database
             await self._update_processing_status(
@@ -257,6 +483,17 @@ class FolderProcessor:
                     "total_files": total_files,
                     "failed_files": failed_files,
                 },
+            )
+
+            # Update folder record with final file count
+            await self.db.store_folder(
+                folder_id=folder_id,
+                user_id=user_id,
+                folder_name=folder_name,
+                file_count=processed_count,
+                status="completed" if processed_count > 0 else "failed",
+                parent_folder_id=None,  # Explicitly set to None for root
+                root_folder_id=folder_id,  # Explicitly set root_folder_id to itself
             )
 
             logger.info(
@@ -322,6 +559,12 @@ class FolderProcessor:
         file_id = file_info.get("id")
         mime_type = file_info.get("mimeType")
 
+        if not file_id:
+            raise ProcessingError("File ID is required")
+        
+        if not mime_type:
+            raise ProcessingError("MIME type is required")
+
         # Check if file type is supported
         if not self.drive_service.is_supported_file_type(mime_type):
             logger.info("Skipping unsupported file type", file_id=file_id, mime_type=mime_type)
@@ -348,8 +591,29 @@ class FolderProcessor:
                 await self.db.store_file_metadata(file_info, folder_id)
                 await self.db.store_chunks(chunks)
 
-                # Store embeddings
-                await self.vector_store.add_chunks(chunks)
+                # Convert chunks to LangChain Documents and store in vector store
+                if LANGCHAIN_AVAILABLE and chunks:
+                    documents = []
+                    for chunk in chunks:
+                        # Create LangChain Document with metadata
+                        doc = Document(
+                            page_content=chunk.content,
+                            metadata={
+                                "chunk_id": chunk.chunk_id,
+                                "file_id": chunk.file_id,
+                                "folder_id": folder_id,
+                                **chunk.metadata
+                            }
+                        )
+                        documents.append(doc)
+                    
+                    # Add documents to vector store
+                    await self.vector_store.add_documents(documents)
+                    logger.debug(
+                        "Added documents to vector store",
+                        file_id=file_id,
+                        document_count=len(documents)
+                    )
 
                 # Success - return
                 return
@@ -403,8 +667,12 @@ class FolderProcessor:
             metadata: Optional status metadata
         """
         try:
-            # TODO: Implement status storage in database
-            # For now, just log it
+            # Actually update the database status
+            await self.db.update_folder_status(
+                folder_id=folder_id,
+                status=status,
+            )
+            
             logger.info(
                 "Processing status updated",
                 folder_id=folder_id,
@@ -414,6 +682,150 @@ class FolderProcessor:
             )
         except Exception as e:
             logger.warning("Failed to update processing status", folder_id=folder_id, error=str(e))
+
+    async def _store_folder_hierarchy(
+        self, root_folder_id: str, user_id: str, subfolders: List[Dict[str, Any]]
+    ) -> None:
+        """Store folder hierarchy in database.
+
+        Args:
+            root_folder_id: Root folder ID
+            user_id: User ID
+            subfolders: List of subfolder metadata with nested structure
+        """
+        async def store_subfolder_recursive(subfolder_data: Dict[str, Any]) -> None:
+            """Recursively store subfolder and its children."""
+            folder_id = subfolder_data.get("folder_id")
+            folder_name = subfolder_data.get("folder_name", "Unknown")
+            parent_folder_id = subfolder_data.get("parent_folder_id")
+            file_count = subfolder_data.get("file_count", 0)
+            
+            if not folder_id:
+                logger.warning("Skipping subfolder without folder_id", subfolder_data=subfolder_data)
+                return
+            
+            # CRITICAL: Prevent root folder from being stored as a subfolder
+            if folder_id == root_folder_id:
+                logger.warning(
+                    "Attempted to store root folder as subfolder, skipping",
+                    folder_id=folder_id,
+                    root_folder_id=root_folder_id
+                )
+                return
+            
+            # Store this subfolder
+            await self.db.store_folder(
+                folder_id=folder_id,
+                user_id=user_id,
+                folder_name=folder_name,
+                file_count=file_count,
+                status="completed",  # Subfolders are considered completed when stored
+                parent_folder_id=parent_folder_id,
+                root_folder_id=root_folder_id,  # Always set to root
+            )
+            
+            # Recursively store nested subfolders
+            nested_subfolders = subfolder_data.get("subfolders", [])
+            for nested_subfolder in nested_subfolders:
+                await store_subfolder_recursive(nested_subfolder)
+        
+        # Store all subfolders recursively
+        for subfolder in subfolders:
+            try:
+                # Double-check: skip if this is the root folder
+                if subfolder.get("folder_id") == root_folder_id:
+                    logger.warning(
+                        "Skipping root folder in subfolders list",
+                        root_folder_id=root_folder_id
+                    )
+                    continue
+                    
+                await store_subfolder_recursive(subfolder)
+                logger.debug(
+                    "Stored subfolder hierarchy",
+                    subfolder_id=subfolder.get("folder_id"),
+                    subfolder_name=subfolder.get("folder_name")
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to store subfolder",
+                    subfolder_id=subfolder.get("folder_id"),
+                    error=str(e)
+                )
+                # Continue storing other subfolders even if one fails
+                continue
+
+    def _build_folder_path_map(
+        self, subfolders: List[Dict[str, Any]], root_folder_name: str
+    ) -> Dict[str, str]:
+        """Build a map of folder_id -> folder_path for quick lookup.
+        
+        Args:
+            subfolders: List of subfolder metadata with nested structure
+            root_folder_name: Name of the root folder
+            
+        Returns:
+            Dictionary mapping folder_id to folder path
+        """
+        folder_map = {}
+        
+        def process_subfolder(subfolder: Dict[str, Any], parent_path: str = "") -> None:
+            """Recursively process subfolders to build path map."""
+            folder_id = subfolder.get("folder_id")
+            folder_name = subfolder.get("folder_name", "Unknown")
+            
+            if parent_path:
+                current_path = f"{parent_path}/{folder_name}"
+            else:
+                current_path = f"{root_folder_name}/{folder_name}"
+            
+            if folder_id:
+                folder_map[folder_id] = current_path
+            
+            # Process nested subfolders
+            nested_subfolders = subfolder.get("subfolders", [])
+            for nested_subfolder in nested_subfolders:
+                process_subfolder(nested_subfolder, current_path)
+        
+        for subfolder in subfolders:
+            process_subfolder(subfolder)
+        
+        return folder_map
+    
+    def _flatten_subfolders(
+        self, subfolders: List[Dict[str, Any]], parent_path: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Flatten subfolder hierarchy for WebSocket messages.
+        
+        Args:
+            subfolders: List of subfolder metadata with nested structure
+            parent_path: Parent folder path
+            
+        Returns:
+            Flattened list of subfolder information
+        """
+        flattened = []
+        
+        for subfolder in subfolders:
+            folder_id = subfolder.get("folder_id")
+            folder_name = subfolder.get("folder_name", "Unknown")
+            current_path = f"{parent_path}/{folder_name}" if parent_path else folder_name
+            
+            flattened.append({
+                "folder_id": folder_id,
+                "folder_name": folder_name,
+                "folder_path": current_path,
+                "parent_folder_id": subfolder.get("parent_folder_id"),
+                "file_count": subfolder.get("file_count", 0),
+                "subfolder_count": subfolder.get("subfolder_count", 0),
+            })
+            
+            # Recursively flatten nested subfolders
+            nested_subfolders = subfolder.get("subfolders", [])
+            if nested_subfolders:
+                flattened.extend(self._flatten_subfolders(nested_subfolders, current_path))
+        
+        return flattened
 
     def cancel_processing(self, folder_id: str, user_id: str) -> bool:
         """Cancel ongoing processing for a folder.

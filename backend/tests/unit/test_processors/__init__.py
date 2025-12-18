@@ -1,2 +1,1 @@
-"""Processor unit tests."""
-
+"""Unit tests for document processors."""

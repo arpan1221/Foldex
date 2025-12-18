@@ -34,13 +34,13 @@ interface KnowledgeGraphProps {
  * Follows Figma wireframe design with dark theme.
  */
 const KnowledgeGraphInner: React.FC<KnowledgeGraphProps> = ({
-  folderId,
+  folderId: _folderId,
   nodes,
   edges,
   isLoading = false,
   layout = 'force',
   onNodeClick,
-  onFitView,
+  onFitView: _onFitView,
 }) => {
 
   // Transform data for React Flow

@@ -1,10 +1,14 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
+import { useFolderProcessor } from '../../hooks/useFolderProcessor';
+import { folderService } from '../../services/api';
 import MessageBubble from './MessageBubble';
-import CitationDisplay from './CitationDisplay';
 import InputArea from './InputArea';
-import Header from '../layout/Header';
+import ErrorDisplay from '../common/ErrorDisplay';
+import LoadingOverlay from '../common/LoadingOverlay';
+import ProcessingStatus from '../folder/ProcessingStatus';
+import AIAssistantIcon from '../common/AIAssistantIcon';
 
 /**
  * ChatInterface Component
@@ -13,11 +17,49 @@ import Header from '../layout/Header';
  * Includes scrollable message area, typing indicators, and responsive layout.
  */
 const ChatInterface: React.FC = () => {
-  const { folderId: paramFolderId } = useParams<{ folderId: string }>();
+  const { folderId: paramFolderId, conversationId: paramConversationId } = useParams<{ folderId: string, conversationId: string }>();
   const folderId = paramFolderId || '';
-  const { messages, sendMessage, isLoading, error } = useChat(folderId);
+  const conversationId = paramConversationId || null;
+  const { messages, sendMessage, isLoading, error } = useChat(folderId, conversationId);
+  const { status: processingStatus, isProcessing, error: processingError } = useFolderProcessor();
+  const [folderExistsInSidebar, setFolderExistsInSidebar] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Check if folder exists in sidebar - poll until it appears
+  useEffect(() => {
+    if (!folderId) {
+      setFolderExistsInSidebar(false);
+      return;
+    }
+    
+    const checkFolderExists = async () => {
+      try {
+        const folders = await folderService.getUserFolders();
+        const exists = folders.some(f => f.folder_id === folderId);
+        setFolderExistsInSidebar(exists);
+      } catch (err) {
+        console.error('Failed to check folder existence:', err);
+        setFolderExistsInSidebar(false);
+      }
+    };
+    
+    // Check immediately
+    checkFolderExists();
+    
+    // Poll every 2 seconds until folder appears (only if processing)
+    const interval = setInterval(() => {
+      if (isProcessing || processingStatus) {
+        checkFolderExists();
+      } else {
+        // If not processing, check once more and stop
+        checkFolderExists();
+        clearInterval(interval);
+      }
+    }, 2000);
+    
+    return () => clearInterval(interval);
+  }, [folderId, isProcessing, processingStatus]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -45,10 +87,7 @@ const ChatInterface: React.FC = () => {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
-      {/* Header */}
-      <Header />
-
+    <div className="h-full flex flex-col">
       {/* Chat Messages Area */}
       <div
         ref={chatContainerRef}
@@ -58,23 +97,18 @@ const ChatInterface: React.FC = () => {
         }}
       >
         <div className="max-w-3xl mx-auto space-y-6">
-          {/* Welcome Message (if no messages) */}
-          {messages.length === 0 && (
+          {/* Processing Status - Show until folder appears in sidebar */}
+          {(isProcessing || (processingStatus && !folderExistsInSidebar)) && processingStatus && (
+            <div className="animate-fade-in">
+              <ProcessingStatus status={processingStatus} error={processingError} />
+            </div>
+          )}
+          
+          {/* Welcome Message (if no messages and not processing) */}
+          {messages.length === 0 && !isProcessing && !processingStatus && (
             <div className="flex gap-4 animate-fade-in">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-foldex-primary-500 to-foldex-accent-500 flex items-center justify-center shadow-lg">
-                <svg
-                  className="w-5 h-5 text-white"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
-                  />
-                </svg>
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center shadow-sm">
+                <AIAssistantIcon className="text-gray-200" size="md" />
               </div>
               <div className="flex-1 space-y-2">
                 <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
@@ -96,20 +130,8 @@ const ChatInterface: React.FC = () => {
           {/* Typing Indicator */}
           {isLoading && (
             <div className="flex gap-4 animate-fade-in">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-foldex-primary-500 to-foldex-accent-500 flex items-center justify-center shadow-lg">
-                <svg
-                  className="w-5 h-5 text-white"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
-                  />
-                </svg>
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gray-600 flex items-center justify-center shadow-sm">
+                <AIAssistantIcon className="text-gray-200" size="md" />
               </div>
               <div className="flex-1 space-y-2">
                 <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
@@ -125,29 +147,23 @@ const ChatInterface: React.FC = () => {
 
           {/* Error Display */}
           {error && (
-            <div className="flex gap-4 animate-fade-in">
-              <div className="flex-1">
-                <div className="bg-red-950/30 border border-red-800/50 rounded-lg p-4">
-                  <div className="flex items-center gap-2">
-                    <svg
-                      className="w-5 h-5 text-red-400"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                    <p className="text-sm text-red-300">
-                      {error.message || 'Failed to send message. Please try again.'}
-                    </p>
-                  </div>
-                </div>
-              </div>
+            <div className="flex gap-4 animate-fade-in max-w-3xl mx-auto">
+              <ErrorDisplay
+                error={error}
+                title="Message Error"
+                onRetry={() => {
+                  // Retry last message if needed
+                  const lastUserMessage = messages
+                    .filter((m) => m.role === 'user')
+                    .pop();
+                  if (lastUserMessage) {
+                    // Could implement retry logic here
+                  }
+                }}
+                onDismiss={() => {
+                  // Error dismissal handled by hook
+                }}
+              />
             </div>
           )}
 
@@ -162,6 +178,15 @@ const ChatInterface: React.FC = () => {
         isLoading={isLoading}
         disabled={!folderId}
       />
+
+      {/* Loading Overlay */}
+      {isLoading && messages.length === 0 && (
+        <LoadingOverlay
+          isLoading={isLoading}
+          message="Loading conversation..."
+          fullScreen={false}
+        />
+      )}
     </div>
   );
 };

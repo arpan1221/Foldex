@@ -211,8 +211,9 @@ class FileCache:
         cached_filename = file_path.name
         cached_path = user_cache_dir / cached_filename
 
-        # Copy file to cache
-        shutil.copy2(file_path, cached_path)
+        # Copy file to cache (only if not already there)
+        if file_path.resolve() != cached_path.resolve():
+            shutil.copy2(file_path, cached_path)
 
         # Store metadata
         self.metadata[cache_key] = {

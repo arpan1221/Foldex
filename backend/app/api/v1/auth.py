@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from datetime import datetime, timedelta
 import structlog
 
 from app.core.auth import (
@@ -10,9 +11,11 @@ from app.core.auth import (
     verify_token,
     verify_refresh_token,
     validate_google_token,
+    exchange_authorization_code,
 )
-from app.core.exceptions import AuthenticationError
+from app.core.exceptions import AuthenticationError, DatabaseError
 from app.core.security import validate_email
+from app.config.settings import settings
 from app.models.auth import (
     TokenRequest,
     TokenResponse,
@@ -21,7 +24,7 @@ from app.models.auth import (
     UserResponse,
 )
 from app.database.sqlite_manager import SQLiteManager
-from app.database.base import get_db_session
+from app.api.deps import get_db_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
@@ -98,8 +101,31 @@ async def exchange_google_token(
         HTTPException: If authentication fails
     """
     try:
+        # Check if this is an authorization code or access token
+        google_token = request.google_token
+        
+        # Authorization codes typically start with "4/" and are shorter than access tokens
+        # Access tokens are much longer (usually 100-200+ chars) and start with "ya29."
+        is_auth_code = google_token.startswith("4/") or (len(google_token) < 200 and not google_token.startswith("ya29."))
+        
+        google_refresh_token = None
+        google_token_expiry = None
+        
+        if is_auth_code:
+            # This is an authorization code - exchange it for an access token
+            logger.info("Exchanging authorization code for access token")
+            token_response = await exchange_authorization_code(
+                code=google_token,
+                redirect_uri=settings.GOOGLE_REDIRECT_URI
+            )
+            google_token = token_response["access_token"]
+            google_refresh_token = token_response.get("refresh_token")
+            expires_in = token_response.get("expires_in", 3600)
+            google_token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+            logger.info("Successfully obtained access token from authorization code")
+        
         # Validate Google token and get user info
-        google_user_info = await validate_google_token(request.google_token)
+        google_user_info = await validate_google_token(google_token)
 
         if not validate_email(google_user_info["email"]):
             raise AuthenticationError("Invalid email address")
@@ -112,7 +138,12 @@ async def exchange_google_token(
             name=google_user_info.get("name"),
             picture=google_user_info.get("picture"),
             verified_email=google_user_info.get("verified_email", False),
+            google_access_token=google_token,
+            google_refresh_token=google_refresh_token,
+            google_token_expiry=google_token_expiry,
+            session=db,  # Use the session from dependency injection
         )
+        await db.commit()  # Commit the transaction
 
         # Create JWT tokens
         token_data = {
@@ -143,6 +174,12 @@ async def exchange_google_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=e.message,
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    except DatabaseError as e:
+        logger.error("Database error in token exchange", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error: {e.message}",
         )
     except Exception as e:
         logger.error("Unexpected error in token exchange", error=str(e), exc_info=True)
