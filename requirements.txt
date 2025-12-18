@@ -1,0 +1,3 @@
+# Core dependencies - install from requirements/base.txt
+-r backend/requirements/base.txt
+
