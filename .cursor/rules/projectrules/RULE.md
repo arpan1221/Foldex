@@ -97,6 +97,7 @@ frontend/src/
 - **Service Methods**: Comprehensive docstrings with examples
 - **README Updates**: Keep setup instructions current
 - **Architecture Docs**: Update when adding new components
+- **CHANGELOG.md**: **REQUIRED** - Maintain changelog tracking all major changes, features, fixes, and breaking changes
 
 ## When Implementing New Features
 1. **Check CLAUDE.md** for relevant patterns and interfaces
@@ -104,7 +105,8 @@ frontend/src/
 3. **Include comprehensive error handling** with custom exception types
 4. **Add tests first** (TDD approach preferred)
 5. **Update documentation** for any new APIs or components
-6. **Consider performance impact** and add monitoring if needed
+6. **Update CHANGELOG.md** with the new feature or change
+7. **Consider performance impact** and add monitoring if needed
 
 ## Common Patterns to Follow
 
@@ -149,6 +151,14 @@ export const Component: React.FC<ComponentProps> = ({ prop1, prop2 }) => {
 - **Code Review**: Self-review against CLAUDE.md checklist before commits
 - **Testing**: Run tests before any commits
 - **Performance**: Monitor memory usage during development
+- **CHANGELOG.md**: **REQUIRED** - Update CHANGELOG.md for every:
+  - New feature or major enhancement
+  - Bug fix affecting user experience
+  - Breaking change or API modification
+  - Security update
+  - Performance improvement
+  - Dependency updates with impact
+  - Use format: `[YYYY-MM-DD] - Category: Description`
 
 ## AI Assistant Behavior
 - **Be Specific**: Generate complete, working code, not pseudocode

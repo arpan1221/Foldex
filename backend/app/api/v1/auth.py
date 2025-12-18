@@ -1,62 +1,268 @@
-"""Authentication API endpoints."""
+"""Authentication API endpoints for Google OAuth2."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import structlog
 
-from app.core.auth import create_access_token, validate_google_token
+from app.core.auth import (
+    create_access_token,
+    create_refresh_token,
+    verify_token,
+    verify_refresh_token,
+    validate_google_token,
+)
 from app.core.exceptions import AuthenticationError
+from app.core.security import validate_email
+from app.models.auth import (
+    TokenRequest,
+    TokenResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    UserResponse,
+)
+from app.database.sqlite_manager import SQLiteManager
+from app.database.base import get_db_session
+from sqlalchemy.ext.asyncio import AsyncSession
 
+logger = structlog.get_logger(__name__)
 router = APIRouter()
+security = HTTPBearer()
 
 
-class TokenRequest(BaseModel):
-    """Request model for token exchange."""
-
-    access_token: str
-
-
-class TokenResponse(BaseModel):
-    """Response model for token exchange."""
-
-    access_token: str
-    token_type: str = "bearer"
-
-
-@router.post("/token", response_model=TokenResponse)
-async def exchange_google_token(request: TokenRequest) -> TokenResponse:
-    """Exchange Google OAuth2 token for JWT.
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Dependency to get current authenticated user.
 
     Args:
-        request: Token request with Google access token
+        credentials: HTTP Bearer token credentials
+        db: Database session
 
     Returns:
-        JWT token response
+        User information dictionary
 
     Raises:
         HTTPException: If authentication fails
     """
     try:
-        user_info = validate_google_token(request.access_token)
-        # Create JWT with user info
-        jwt_token = create_access_token(data={"sub": user_info.get("email")})
-        return TokenResponse(access_token=jwt_token)
+        token = credentials.credentials
+        payload = verify_token(token)
+        user_id = payload.get("sub")
+
+        if not user_id:
+            raise AuthenticationError("Invalid token payload")
+
+        # Get user from database
+        db_manager = SQLiteManager()
+        user = await db_manager.get_user_by_id(user_id)
+
+        if not user:
+            raise AuthenticationError("User not found")
+
+        return user
+
     except AuthenticationError as e:
+        logger.warning("Authentication failed", error=str(e))
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=e.message
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.message,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error("Unexpected authentication error", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
 
-@router.get("/me")
+@router.post("/token", response_model=TokenResponse, status_code=status.HTTP_200_OK)
+async def exchange_google_token(
+    request: TokenRequest, db: AsyncSession = Depends(get_db_session)
+) -> TokenResponse:
+    """Exchange Google OAuth2 token for JWT tokens.
+
+    Validates the Google token, creates or updates user record,
+    and returns JWT access and refresh tokens.
+
+    Args:
+        request: Token request with Google access token
+        db: Database session
+
+    Returns:
+        Token response with JWT tokens
+
+    Raises:
+        HTTPException: If authentication fails
+    """
+    try:
+        # Validate Google token and get user info
+        google_user_info = await validate_google_token(request.google_token)
+
+        if not validate_email(google_user_info["email"]):
+            raise AuthenticationError("Invalid email address")
+
+        # Get or create user in database
+        db_manager = SQLiteManager()
+        user = await db_manager.get_or_create_user(
+            google_id=google_user_info["google_id"],
+            email=google_user_info["email"],
+            name=google_user_info.get("name"),
+            picture=google_user_info.get("picture"),
+            verified_email=google_user_info.get("verified_email", False),
+        )
+
+        # Create JWT tokens
+        token_data = {
+            "sub": user["user_id"],
+            "email": user["email"],
+            "google_id": user.get("google_id"),
+        }
+
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(data=token_data)
+
+        logger.info(
+            "Token exchange successful",
+            user_id=user["user_id"],
+            email=user["email"],
+        )
+
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in=24 * 3600,  # 24 hours in seconds
+        )
+
+    except AuthenticationError as e:
+        logger.warning("Token exchange failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.message,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error("Unexpected error in token exchange", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during authentication",
+        )
+
+
+@router.post(
+    "/refresh", response_model=RefreshTokenResponse, status_code=status.HTTP_200_OK
+)
+async def refresh_access_token(
+    request: RefreshTokenRequest, db: AsyncSession = Depends(get_db_session)
+) -> RefreshTokenResponse:
+    """Refresh JWT access token using refresh token.
+
+    Args:
+        request: Refresh token request
+        db: Database session
+
+    Returns:
+        New access token response
+
+    Raises:
+        HTTPException: If refresh token is invalid
+    """
+    try:
+        # Verify refresh token
+        payload = verify_refresh_token(request.refresh_token)
+        user_id = payload.get("sub")
+
+        if not user_id:
+            raise AuthenticationError("Invalid refresh token payload")
+
+        # Verify user exists
+        db_manager = SQLiteManager()
+        user = await db_manager.get_user_by_id(user_id)
+
+        if not user:
+            raise AuthenticationError("User not found")
+
+        # Create new access token
+        token_data = {
+            "sub": user["user_id"],
+            "email": user["email"],
+            "google_id": user.get("google_id"),
+        }
+
+        access_token = create_access_token(data=token_data)
+
+        logger.info("Token refresh successful", user_id=user_id)
+
+        return RefreshTokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=24 * 3600,  # 24 hours in seconds
+        )
+
+    except AuthenticationError as e:
+        logger.warning("Token refresh failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.message,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error("Unexpected error in token refresh", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during token refresh",
+        )
+
+
+@router.get("/me", response_model=UserResponse, status_code=status.HTTP_200_OK)
 async def get_current_user_info(
-    current_user: dict = Depends(lambda: {}),  # TODO: Implement proper dependency
-) -> dict:
+    current_user: dict = Depends(get_current_user),
+) -> UserResponse:
     """Get current authenticated user information.
 
     Args:
-        current_user: Current user from dependency
+        current_user: Current user from dependency injection
 
     Returns:
-        User information
-    """
-    return current_user
+        User information response
 
+    Raises:
+        HTTPException: If user not found
+    """
+    try:
+        return UserResponse(
+            user_id=current_user["user_id"],
+            email=current_user["email"],
+            name=current_user.get("name"),
+            picture=current_user.get("picture"),
+            verified_email=current_user.get("verified_email", False),
+        )
+    except Exception as e:
+        logger.error("Failed to get user info", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve user information",
+        )
+
+
+@router.post("/logout", status_code=status.HTTP_200_OK)
+async def logout(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Logout endpoint (client should discard tokens).
+
+    Note: Since we use stateless JWT tokens, logout is handled
+    client-side by discarding tokens. This endpoint provides
+    a way to log the logout event.
+
+    Args:
+        current_user: Current user from dependency injection
+
+    Returns:
+        Success message
+    """
+    logger.info("User logged out", user_id=current_user.get("user_id"))
+    return {"message": "Logged out successfully"}

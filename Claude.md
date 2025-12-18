@@ -501,4 +501,17 @@ async def process_folder(folder_id: str, user_id: str) -> ProcessingResult:
 - Performance characteristics and limitations
 - Supported file types and processing capabilities
 
+### CHANGELOG Requirements
+- **REQUIRED**: Maintain CHANGELOG.md in root directory
+- **REQUIRED**: Update for every major change:
+  - New features or enhancements
+  - Bug fixes affecting user experience
+  - Breaking changes or API modifications
+  - Security updates
+  - Performance improvements
+  - Significant dependency updates
+- **Format**: Use date-based entries with categories (Added, Changed, Fixed, Security, etc.)
+- **Style**: Follow [Keep a Changelog](https://keepachangelog.com/) format
+- **Timing**: Update changelog before committing major changes
+
 This document serves as the source of truth for all code generation. When implementing any component, refer back to these standards to ensure consistency and quality.

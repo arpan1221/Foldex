@@ -18,15 +18,21 @@ def chunk_text(text: str, chunk_size: Optional[int] = None, overlap: Optional[in
     chunk_size = chunk_size or settings.CHUNK_SIZE
     overlap = overlap or settings.CHUNK_OVERLAP
 
+    if not text or not text.strip():
+        return []
+
     chunks = []
     start = 0
     text_length = len(text)
 
     while start < text_length:
         end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
+        chunk = text[start:end].strip()
+        if chunk:  # Only add non-empty chunks
+            chunks.append(chunk)
         start = end - overlap
+        if start >= text_length:
+            break
 
     return chunks
 

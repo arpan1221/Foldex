@@ -1,40 +1,253 @@
 import React from 'react';
+import { ProcessingStatus as ProcessingStatusType } from '../../services/types';
 
 interface ProcessingStatusProps {
-  status: {
-    type: string;
-    message?: string;
-    progress?: number;
-    file_name?: string;
-  };
+  status: ProcessingStatusType;
+  error?: Error | null;
 }
 
-const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status }) => {
+/**
+ * ProcessingStatus Component
+ * 
+ * Real-time processing progress display with WebSocket updates.
+ * Shows progress bars, file-by-file processing, and completion status.
+ */
+const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error }) => {
+  const progressPercentage = status.progress
+    ? Math.round(status.progress * 100)
+    : 0;
+
+  // Determine status icon and color
+  const getStatusConfig = () => {
+    switch (status.type) {
+      case 'processing_started':
+        return {
+          icon: 'spinner',
+          color: 'text-foldex-primary-400',
+          bgColor: 'bg-foldex-primary-950/30',
+          borderColor: 'border-foldex-primary-800/50',
+        };
+      case 'file_processed':
+        return {
+          icon: 'check',
+          color: 'text-green-400',
+          bgColor: 'bg-green-950/30',
+          borderColor: 'border-green-800/50',
+        };
+      case 'processing_complete':
+        return {
+          icon: 'complete',
+          color: 'text-green-400',
+          bgColor: 'bg-green-950/30',
+          borderColor: 'border-green-800/50',
+        };
+      case 'processing_error':
+        return {
+          icon: 'error',
+          color: 'text-red-400',
+          bgColor: 'bg-red-950/30',
+          borderColor: 'border-red-800/50',
+        };
+      default:
+        return {
+          icon: 'spinner',
+          color: 'text-gray-400',
+          bgColor: 'bg-gray-800/50',
+          borderColor: 'border-gray-700',
+        };
+    }
+  };
+
+  const config = getStatusConfig();
+
+  // Don't render if no status
+  if (!status) {
+    return null;
+  }
+
   return (
-    <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-      <div className="flex items-center gap-2">
-        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
-        <span className="text-blue-700">{status.message || 'Processing...'}</span>
-      </div>
-      {status.progress !== undefined && (
-        <div className="mt-2">
-          <div className="w-full bg-gray-200 rounded-full h-2">
-            <div
-              className="bg-blue-500 h-2 rounded-full transition-all"
-              style={{ width: `${status.progress * 100}%` }}
-            ></div>
+    <div
+      className={`
+        ${config.bgColor} ${config.borderColor}
+        border-2 rounded-lg p-6 shadow-xl
+        animate-fade-in
+      `}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-4">
+        {status.type === 'processing_started' || status.type === 'file_processed' ? (
+          <div className="relative">
+            <svg
+              className={`animate-spin h-6 w-6 ${config.color}`}
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
           </div>
-          <p className="text-sm text-gray-600 mt-1">
-            {Math.round(status.progress * 100)}% complete
-          </p>
+        ) : status.type === 'processing_complete' ? (
+          <svg
+            className={`h-6 w-6 ${config.color}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+        ) : (
+          <svg
+            className={`h-6 w-6 ${config.color}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+        )}
+
+        <div className="flex-1">
+          <h3 className={`text-lg font-semibold ${config.color}`}>
+            {status.type === 'processing_started' && 'Processing Started'}
+            {status.type === 'file_processed' && 'Processing Files'}
+            {status.type === 'processing_complete' && 'Processing Complete'}
+            {status.type === 'processing_error' && 'Processing Error'}
+          </h3>
+          {status.message && (
+            <p className="text-sm text-gray-300 mt-1">{status.message}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      {(status.progress !== undefined || status.files_processed !== undefined) && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-300">
+              {status.files_processed !== undefined && status.total_files !== undefined
+                ? `File ${status.files_processed} of ${status.total_files}`
+                : 'Progress'}
+            </span>
+            <span className="text-sm font-medium text-gray-200">
+              {progressPercentage}%
+            </span>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+            <div
+              className={`
+                h-full rounded-full transition-all duration-300 ease-out
+                ${
+                  status.type === 'processing_complete'
+                    ? 'bg-gradient-to-r from-green-500 to-green-600'
+                    : status.type === 'processing_error'
+                    ? 'bg-gradient-to-r from-red-500 to-red-600'
+                    : 'bg-gradient-to-r from-foldex-primary-500 to-foldex-accent-500'
+                }
+              `}
+              style={{
+                width: `${progressPercentage}%`,
+              }}
+            />
+          </div>
         </div>
       )}
+
+      {/* Current File */}
       {status.file_name && (
-        <p className="text-sm text-gray-600 mt-2">Processing: {status.file_name}</p>
+        <div className="flex items-center gap-2 p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+          <svg
+            className="w-4 h-4 text-gray-400"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          <span className="text-sm text-gray-300 truncate">
+            Processing: <span className="font-medium">{status.file_name}</span>
+          </span>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {(error || status.type === 'processing_error') && (
+        <div className="mt-4 p-3 bg-red-950/30 border border-red-800/50 rounded-lg">
+          <div className="flex items-start gap-2">
+            <svg
+              className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-400">Error</p>
+              <p className="text-sm text-red-300 mt-1">
+                {error?.message || status.error || 'An error occurred during processing'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Message */}
+      {status.type === 'processing_complete' && (
+        <div className="mt-4 p-3 bg-green-950/30 border border-green-800/50 rounded-lg">
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-5 h-5 text-green-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <p className="text-sm text-green-300">
+              All files processed successfully! You can now start chatting.
+            </p>
+          </div>
+        </div>
       )}
     </div>
   );
 };
 
 export default ProcessingStatus;
-

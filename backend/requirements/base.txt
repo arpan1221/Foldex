@@ -8,6 +8,7 @@ pydantic-settings==2.1.0
 sqlalchemy==2.0.23
 aiosqlite==0.19.0
 chromadb==0.4.18
+alembic==1.12.1  # Database migrations
 
 # Google Drive API
 google-api-python-client==2.108.0
@@ -24,6 +25,7 @@ networkx==3.2.1
 # Document Processing
 PyPDF2==3.0.1
 pdfplumber==0.10.3
+PyMuPDF==1.23.8  # For PDF text extraction
 python-docx==1.1.0
 
 # Utilities
@@ -35,4 +37,7 @@ aiofiles==23.2.1
 
 # HTTP Client
 httpx==0.25.2
+
+# JWT
+PyJWT==2.8.0
 

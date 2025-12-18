@@ -16,7 +16,8 @@
     "react-router-dom": "^6.20.0",
     "axios": "^1.6.2",
     "zustand": "^4.4.7",
-    "react-query": "^3.39.3"
+    "react-query": "^3.39.3",
+    "reactflow": "^11.10.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.43",
