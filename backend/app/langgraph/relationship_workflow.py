@@ -16,6 +16,7 @@ except ImportError:
 from app.core.exceptions import ProcessingError
 from app.langgraph.knowledge_state import KnowledgeGraphState, KnowledgeStateManager
 from app.langgraph.relationship_nodes import RelationshipNodes
+from app.monitoring.langsmith_monitoring import get_langsmith_monitor
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +57,11 @@ class RelationshipWorkflow:
             except Exception as e:
                 logger.warning("Failed to initialize checkpointing", error=str(e))
                 self.checkpointer = None
+
+        # Get LangSmith callbacks for observability (stored for use in run method)
+        langsmith_monitor = get_langsmith_monitor()
+        self.langsmith_callbacks = langsmith_monitor.get_callbacks()
+        self.langsmith_enabled = langsmith_monitor.enabled
 
         # Build workflow graph
         self.graph = self._build_workflow()
@@ -167,13 +173,16 @@ class RelationshipWorkflow:
                 },
             )
 
-            # Compile workflow
+            # Compile workflow (callbacks are passed in config during invocation, not compilation)
             if self.checkpointer:
                 compiled = workflow.compile(checkpointer=self.checkpointer)
             else:
                 compiled = workflow.compile()
 
-            logger.info("Built LangGraph relationship workflow")
+            logger.info(
+                "Built LangGraph relationship workflow",
+                langsmith_enabled=self.langsmith_enabled,
+            )
 
             return compiled
 
@@ -225,10 +234,32 @@ class RelationshipWorkflow:
             ProcessingError: If workflow execution fails
         """
         try:
+            # Get LangSmith monitor and create config with tracing
+            langsmith_monitor = get_langsmith_monitor()
+            
+            # Merge LangSmith config with provided config
+            if config is None:
+                config = {}
+            
+            langsmith_config = langsmith_monitor.get_langgraph_config(
+                metadata={
+                    "folder_id": folder_id,
+                    "document_count": len(documents),
+                }
+            )
+            
+            # Merge configs (provided config takes precedence)
+            final_config = {**langsmith_config, **config}
+            
+            # Add LangSmith callbacks to config if available
+            if self.langsmith_callbacks:
+                final_config["callbacks"] = self.langsmith_callbacks
+
             logger.info(
                 "Starting relationship detection workflow",
                 document_count=len(documents),
                 folder_id=folder_id,
+                langsmith_enabled=langsmith_monitor.enabled,
             )
 
             # Create initial state
@@ -237,15 +268,13 @@ class RelationshipWorkflow:
                 folder_id=folder_id,
             )
 
-            # Prepare config
-            if config is None:
-                config = {}
-            if self.checkpointer and "configurable" not in config:
-                config["configurable"] = {"thread_id": folder_id or "default"}
+            # Prepare config for checkpointing (merge with LangSmith config)
+            if self.checkpointer and "configurable" not in final_config:
+                final_config["configurable"] = {"thread_id": folder_id or "default"}
 
-            # Run workflow
+            # Run workflow with LangSmith tracing
             final_state = None
-            async for state in self.graph.astream(initial_state, config=config):
+            async for state in self.graph.astream(initial_state, config=final_config):
                 # Log progress
                 current_step = state.get("workflow_step", "unknown")
                 logger.debug(

@@ -16,6 +16,7 @@ except ImportError:
 from app.core.exceptions import ProcessingError
 from app.langgraph.graph_state import GraphAgentState, GraphStateManager
 from app.langgraph.graph_agents import GraphAgents
+from app.monitoring.langsmith_monitoring import get_langsmith_monitor
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +57,11 @@ class AgentWorkflow:
             except Exception as e:
                 logger.warning("Failed to initialize checkpointing", error=str(e))
                 self.checkpointer = None
+
+        # Get LangSmith callbacks for observability (stored for use in run method)
+        langsmith_monitor = get_langsmith_monitor()
+        self.langsmith_callbacks = langsmith_monitor.get_callbacks()
+        self.langsmith_enabled = langsmith_monitor.enabled
 
         # Build workflow graph
         self.graph = self._build_workflow()
@@ -107,13 +113,16 @@ class AgentWorkflow:
             workflow.add_edge("graph_maintenance", "quality_assessment")
             workflow.add_edge("quality_assessment", END)
 
-            # Compile workflow
+            # Compile workflow (callbacks are passed in config during invocation, not compilation)
             if self.checkpointer:
                 compiled = workflow.compile(checkpointer=self.checkpointer)
             else:
                 compiled = workflow.compile()
 
-            logger.info("Built LangGraph agent workflow")
+            logger.info(
+                "Built LangGraph agent workflow",
+                langsmith_enabled=self.langsmith_enabled,
+            )
 
             return compiled
 
@@ -149,11 +158,34 @@ class AgentWorkflow:
             ProcessingError: If workflow execution fails
         """
         try:
+            # Get LangSmith monitor and create config with tracing
+            langsmith_monitor = get_langsmith_monitor()
+            
+            # Merge LangSmith config with provided config
+            if config is None:
+                config = {}
+            
+            langsmith_config = langsmith_monitor.get_langgraph_config(
+                metadata={
+                    "folder_id": folder_id,
+                    "entity_count": len(entities),
+                    "relationship_count": len(relationships),
+                }
+            )
+            
+            # Merge configs (provided config takes precedence)
+            final_config = {**langsmith_config, **config}
+            
+            # Add LangSmith callbacks to config if available
+            if self.langsmith_callbacks:
+                final_config["callbacks"] = self.langsmith_callbacks
+
             logger.info(
                 "Starting graph enhancement workflow",
                 entity_count=len(entities),
                 relationship_count=len(relationships),
                 folder_id=folder_id,
+                langsmith_enabled=langsmith_monitor.enabled,
             )
 
             # Create initial state
@@ -164,16 +196,14 @@ class AgentWorkflow:
                 folder_id=folder_id,
             )
 
-            # Prepare config for checkpointing
-            if config is None:
-                config = {}
-            if self.checkpointer and "configurable" not in config:
+            # Prepare config for checkpointing (merge with LangSmith config)
+            if self.checkpointer and "configurable" not in final_config:
                 thread_id = folder_id or "default"
-                config["configurable"] = {"thread_id": thread_id}
+                final_config["configurable"] = {"thread_id": thread_id}
 
-            # Run workflow
+            # Run workflow with LangSmith tracing
             final_state = None
-            async for state in self.graph.astream(initial_state, config=config):
+            async for state in self.graph.astream(initial_state, config=final_config):
                 # Log progress
                 current_step = state.get("workflow_step", "unknown")
                 logger.debug(

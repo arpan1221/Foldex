@@ -1,5 +1,6 @@
 """FastAPI application entry point with middleware and routing."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
-from app.api.v1 import auth, folders, chat, websocket
+from app.api.v1 import auth, folders, chat, websocket, warmup, knowledge_graph, folder_summary
 from app.config.settings import settings
 from app.config.logging import setup_logging, get_logger
 from app.core.exceptions import FoldexException
@@ -53,6 +54,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error("Database initialization failed", error=str(e), exc_info=True)
         raise
 
+    # Initialize cache
+    try:
+        from app.utils.caching import get_cache
+        cache = get_cache()
+        logger.info("Cache initialized", stats=cache.get_stats())
+    except Exception as e:
+        logger.warning("Cache initialization failed", error=str(e), exc_info=True)
+    
     # Run startup warmup (TTFT optimization + model pre-warming)
     try:
         await startup_warmup()
@@ -70,6 +79,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await close_database()
         logger.info("Database closed successfully")
+    except asyncio.CancelledError:
+        # Normal cancellation during shutdown (asyncio cancels tasks during shutdown)
+        # This is expected behavior and can be safely ignored
+        pass
     except Exception as e:
         logger.error("Error closing database", error=str(e), exc_info=True)
 
@@ -236,9 +249,18 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(
     folders.router, prefix="/api/v1/folders", tags=["Folder Processing"]
 )
+app.include_router(
+    folder_summary.router, prefix="/api/v1", tags=["Folder Summary"]
+)
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat & Queries"])
 app.include_router(
     websocket.router, prefix="/ws", tags=["WebSocket"]
+)
+app.include_router(warmup.router, prefix="/api/v1", tags=["Performance"])
+app.include_router(
+    knowledge_graph.router,
+    prefix="/api/v1/knowledge-graph",
+    tags=["Knowledge Graph"],
 )
 
 

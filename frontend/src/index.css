@@ -2,6 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Inline citation styling */
+.citation-link {
+  color: #60a5fa; /* foldex-primary-400 */
+  text-decoration: none;
+  font-size: 0.85em;
+  margin-left: 2px;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.citation-link:hover {
+  color: #93c5fd; /* foldex-primary-300 */
+  text-decoration: underline;
+}
+
+sup {
+  vertical-align: super;
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.citation-missing {
+  color: #ef4444;
+  font-weight: bold;
+}
+
+/* Citation footer styling */
+.citation-footer {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.citation-item {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  transition: background 0.2s ease;
+}
+
+.citation-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.citation-item .section {
+  color: #9ca3af;
+  font-size: 0.9em;
+  margin-left: 8px;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;

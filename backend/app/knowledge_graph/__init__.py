@@ -1,2 +1,1 @@
-"""Knowledge graph package."""
-
+"""Knowledge graph module for Foldex."""

@@ -80,6 +80,11 @@ class ConnectionManager:
             message: Message to send (will be enriched with timestamp)
         """
         if folder_id not in self.active_connections:
+            logger.debug(
+                "No active WebSocket connections for folder",
+                folder_id=folder_id,
+                message_type=message.get("type"),
+            )
             return
 
         # Enrich message with timestamp if not present
@@ -104,7 +109,7 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn, folder_id)
 
-        logger.debug(
+        logger.info(
             "WebSocket message sent",
             folder_id=folder_id,
             message_type=message.get("type"),

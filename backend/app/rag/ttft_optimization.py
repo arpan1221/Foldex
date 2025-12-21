@@ -200,10 +200,10 @@ class ContextOptimizer:
 
     def __init__(
         self,
-        max_context_chars: int = 6000,
-        max_documents: int = 5,
+        max_context_chars: int = 3000,
+        max_documents: int = 3,
         truncate_long_docs: bool = True,
-        doc_char_limit: int = 1500
+        doc_char_limit: int = 1200
     ):
         """Initialize context optimizer.
 
@@ -384,8 +384,8 @@ class TTFTOptimizer:
         enable_prompt_cache: bool = True,
         enable_context_optimization: bool = True,
         prompt_cache_size: int = 100,
-        max_context_chars: int = 6000,
-        max_documents: int = 5
+        max_context_chars: int = 3000,
+        max_documents: int = 3
     ):
         """Initialize TTFT optimizer.
 
@@ -500,7 +500,14 @@ def get_ttft_optimizer() -> TTFTOptimizer:
     """
     global _ttft_optimizer
     if _ttft_optimizer is None:
-        _ttft_optimizer = TTFTOptimizer()
+        from app.config.settings import settings
+        _ttft_optimizer = TTFTOptimizer(
+            enable_prompt_cache=settings.ENABLE_PROMPT_CACHE,
+            enable_context_optimization=settings.ENABLE_TTFT_OPTIMIZATION,
+            prompt_cache_size=settings.PROMPT_CACHE_SIZE,
+            max_context_chars=settings.MAX_CONTEXT_CHARS,
+            max_documents=settings.MAX_CONTEXT_DOCS,
+        )
     return _ttft_optimizer
 
 

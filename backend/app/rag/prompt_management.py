@@ -65,18 +65,18 @@ class PromptManager:
         Returns:
             PromptTemplate for factual queries (RetrievalQA compatible)
         """
-        template = """You are a helpful AI assistant that answers questions based on the provided context documents.
+        template = """Answer the question using the provided context.
 
-Context Documents:
+Context:
 {context}
 
 Question: {question}
 
 Instructions:
-- Answer the question directly and factually based ONLY on the provided context
-- If the answer is not in the context, say "I don't have enough information to answer this question based on the provided documents."
-- Cite specific documents or sections when possible
-- Be concise and accurate
+- Answer in 1-3 sentences
+- Use information from all document chunks
+- Add citations [1], [2] after each claim
+- No thinking tags or meta-commentary
 
 Answer:"""
 
@@ -91,20 +91,19 @@ Answer:"""
         Returns:
             PromptTemplate for synthesis queries (RetrievalQA compatible)
         """
-        template = """You are a helpful AI assistant that synthesizes information from multiple documents to answer complex questions.
+        template = """Analyze the documents and find patterns across ALL files.
 
-Context Documents:
+Context:
 {context}
 
 Question: {question}
 
 Instructions:
-- Synthesize information from multiple context documents to provide a comprehensive answer
-- Identify patterns, themes, and connections across documents
-- Provide a well-structured answer that integrates information from different sources
-- Cite the relevant documents that contributed to your synthesis
-- If information is contradictory across documents, acknowledge the differences
-- Be thorough but organized in your response
+- Answer in 2-3 sentences maximum
+- Discuss ALL files in the context, not just one
+- Connect related ideas from different files
+- Add citations [1], [2] after each claim
+- No thinking tags or meta-commentary
 
 Answer:"""
 
@@ -119,19 +118,19 @@ Answer:"""
         Returns:
             PromptTemplate for relationship queries (RetrievalQA compatible)
         """
-        template = """You are a helpful AI assistant that identifies relationships and connections between concepts, entities, and documents.
+        template = """Identify relationships and connections across ALL files in the context.
 
-Context Documents:
+Context:
 {context}
 
 Question: {question}
 
 Instructions:
-- Identify relationships, connections, and patterns between entities mentioned in the context
-- Explain how different concepts, people, or documents relate to each other
-- Map out dependencies, influences, or causal relationships when applicable
-- Provide clear explanations of how things are connected
-- Cite specific documents that mention these relationships
+- Answer in 2-3 sentences maximum
+- Discuss ALL files, not just one
+- Explain how files connect to each other
+- Add citations [1], [2] after each claim
+- No thinking tags or meta-commentary
 
 Answer:"""
 
@@ -146,18 +145,25 @@ Answer:"""
         Returns:
             PromptTemplate for general queries (RetrievalQA compatible)
         """
-        template = """You are a helpful AI assistant that answers questions based on provided context documents.
+        template = """Answer the question using information from ALL files in the context.
 
-Context Documents:
+Context:
 {context}
 
 Question: {question}
 
 Instructions:
-- Answer the question based on the provided context documents
-- Be helpful, accurate, and cite sources when possible
-- If you don't have enough information, say so clearly
-- Format your response in a clear and readable way
+- Answer in 1-3 sentences maximum
+- Use information from ALL files, not just one
+- Add citations [1], [2] after each claim
+- No thinking tags or meta-commentary
+
+CITATION REQUIREMENTS:
+- Add inline citations like [1], [2] immediately after claims from sources
+- Only cite sources you actually used from the context above
+- Multiple citations for one claim: [1][2]
+- Example: "The folder contains implementation details [1] and best practices [2]."
+- Get straight to the answer
 
 Answer:"""
 
@@ -260,18 +266,25 @@ Answer:"""
         # Default to general
         return "default"
 
-    def format_context(self, documents: list) -> str:
-        """Format retrieved documents as context string.
+    def format_context(self, documents: list, numbered: bool = True, include_relationships: bool = True) -> str:
+        """Format retrieved documents as context string with optional numbering for citations.
 
         Args:
             documents: List of document objects (LangChain Documents or DocumentChunks)
+            numbered: If True, number each chunk for inline citations
+            include_relationships: If True, include document relationship analysis
 
         Returns:
-            Formatted context string
+            Formatted context string with optionally numbered chunks, grouped by file
         """
-        context_parts = []
+        if not documents:
+            return ""
 
-        for i, doc in enumerate(documents, 1):
+        # Group documents by file
+        from collections import defaultdict
+        file_groups = defaultdict(list)
+
+        for idx, doc in enumerate(documents, 1):
             # Handle both LangChain Documents and DocumentChunks
             if hasattr(doc, "page_content"):
                 content = doc.page_content
@@ -285,22 +298,77 @@ Answer:"""
 
             file_name = metadata.get("file_name", "Unknown")
             page_number = metadata.get("page_number")
-            chunk_index = metadata.get("chunk_index")
+            start_time = metadata.get("start_time")
+            end_time = metadata.get("end_time")
 
-            # Build citation
-            citation_parts = [f"Document {i}"]
-            if file_name:
-                citation_parts.append(f"from '{file_name}'")
+            # Build source reference
+            location_parts = []
             if page_number is not None:
-                citation_parts.append(f"page {page_number}")
-            if chunk_index is not None:
-                citation_parts.append(f"chunk {chunk_index}")
+                location_parts.append(f"p.{page_number}")
+            if start_time is not None and end_time is not None:
+                location_parts.append(f"{start_time:.1f}s-{end_time:.1f}s")
 
-            citation = " ".join(citation_parts)
+            location = f", {', '.join(location_parts)}" if location_parts else ""
 
-            context_parts.append(f"[{citation}]:\n{content}\n")
+            # Store with metadata for grouping
+            file_groups[file_name].append({
+                "idx": idx,
+                "content": content,
+                "location": location,
+            })
 
-        return "\n\n".join(context_parts)
+        # Build formatted context grouped by file
+        context_parts = []
+
+        # Add header with file count and relationships
+        unique_files = len(file_groups)
+        if unique_files > 1:
+            file_list = ", ".join(f'"{name}"' for name in sorted(file_groups.keys()))
+            context_parts.append(f"IMPORTANT: This context contains excerpts from {unique_files} different files: {file_list}")
+            context_parts.append("You MUST analyze all of these files in your response.")
+
+            # Add document relationship analysis if enabled
+            if include_relationships:
+                from app.knowledge_graph.document_relationships import get_document_relationship_detector
+                detector = get_document_relationship_detector()
+                relationship_data = detector.detect_document_relationships(documents)
+
+                # Add shared themes if found
+                shared_themes = relationship_data.get("shared_themes", [])
+                if shared_themes:
+                    top_themes = [t["theme"] for t in shared_themes[:5]]
+                    context_parts.append(f"Shared themes across files: {', '.join(top_themes)}")
+
+                # Add document topics
+                document_topics = relationship_data.get("document_topics", {})
+                if document_topics:
+                    topic_summary = []
+                    for file_name in sorted(document_topics.keys())[:3]:  # Top 3 files
+                        topics = document_topics[file_name][:3]  # Top 3 topics per file
+                        if topics:
+                            topic_summary.append(f"{file_name}: {', '.join(topics)}")
+                    if topic_summary:
+                        context_parts.append("Document topics: " + " | ".join(topic_summary))
+
+            context_parts.append("")  # Blank line separator
+
+        # Add chunks grouped by file
+        for file_name in sorted(file_groups.keys()):
+            chunks = file_groups[file_name]
+
+            # Add file separator
+            if unique_files > 1:
+                context_parts.append(f"--- File: {file_name} ({len(chunks)} excerpt{'s' if len(chunks) != 1 else ''}) ---")
+
+            for chunk in chunks:
+                if numbered:
+                    source_ref = f"[{chunk['idx']}] {file_name}{chunk['location']}"
+                else:
+                    source_ref = f"{file_name}{chunk['location']}"
+
+                context_parts.append(f"{source_ref}:\n{chunk['content']}\n")
+
+        return "\n".join(context_parts).strip()
 
 
 # Global prompt manager instance

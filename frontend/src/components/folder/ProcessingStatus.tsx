@@ -1,9 +1,12 @@
 import React from 'react';
 import { ProcessingStatus as ProcessingStatusType } from '../../services/types';
+import IngestionProgress from './IngestionProgress';
+import LearningProgress from './LearningProgress';
 
 interface ProcessingStatusProps {
   status: ProcessingStatusType;
   error?: Error | null;
+  onRetryFile?: (fileId: string) => void;
 }
 
 /**
@@ -11,8 +14,9 @@ interface ProcessingStatusProps {
  * 
  * Real-time processing progress display with WebSocket updates.
  * Shows progress bars, file-by-file processing, and completion status.
+ * Includes file type distribution and detailed ingestion progress.
  */
-const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error }) => {
+const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRetryFile }) => {
   const progressPercentage = status.progress
     ? Math.round(status.progress * 100)
     : 0;
@@ -138,7 +142,7 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error }) =>
             {status.type === 'processing_complete' && 'Processing Complete'}
             {status.type === 'processing_error' && 'Processing Error'}
             {status.type === 'file_error' && 'File Processing Error'}
-            {!['processing_started', 'files_detected', 'file_processing', 'file_processed', 'building_graph', 'graph_complete', 'processing_complete', 'processing_error', 'file_error'].includes(status.type) && 'Processing'}
+            {!['processing_started', 'files_detected', 'file_processing', 'file_processed', 'building_graph', 'graph_complete', 'processing_complete', 'processing_error', 'file_error', 'learning_started', 'generating_summary', 'summary_progress', 'summary_complete', 'summary_error'].includes(status.type) && 'Processing'}
           </h3>
           {status.message && (
             <p className="text-sm text-gray-400 mt-1">{status.message}</p>
@@ -228,27 +232,70 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error }) =>
         </div>
       )}
 
-      {/* Success Message */}
-      {(status.type === 'processing_complete' || status.type === 'graph_complete') && (
+      {/* Ingestion Progress Details */}
+      {(status.type === 'file_processing' || 
+        status.type === 'file_processed' || 
+        status.type === 'file_error' ||
+        status.type === 'files_detected') && (
+        <div className="mt-4">
+          <IngestionProgress status={status} onRetry={onRetryFile} />
+        </div>
+      )}
+
+      {/* Learning Progress */}
+      {(status.type === 'learning_started' ||
+        status.type === 'generating_summary' ||
+        status.type === 'summary_progress' ||
+        status.type === 'summary_complete' ||
+        status.type === 'summary_error') && (
+        <div className="mt-4">
+          <LearningProgress status={status} />
+        </div>
+      )}
+
+      {/* Success/Completion Message - Only show if NOT in learning phase */}
+      {(status.type === 'processing_complete' || status.type === 'graph_complete') && 
+       !['learning_started', 'generating_summary', 'summary_progress', 'summary_complete', 'summary_error'].includes(status.type) && (
         <div className="mt-4 p-3 bg-gray-900/50 border border-gray-700 rounded-lg">
-          <div className="flex items-center gap-2">
-            <svg
-              className="w-5 h-5 text-gray-300"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-            <p className="text-sm text-gray-300">
-              All files processed successfully! You can now start chatting.
-            </p>
-          </div>
+          {status.failed_files && status.failed_files > 0 ? (
+            <div className="flex items-center gap-2">
+              <svg
+                className="w-5 h-5 text-yellow-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
+              </svg>
+              <p className="text-sm text-yellow-400">
+                Processing complete: {status.files_processed || 0}/{status.total_files || 0} files processed, {status.failed_files} failed. You can still chat with the successfully processed files.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <svg
+                className="w-5 h-5 text-green-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <p className="text-sm text-green-400">
+                All files processed successfully! Learning folder...
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

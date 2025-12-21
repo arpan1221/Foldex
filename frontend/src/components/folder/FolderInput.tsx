@@ -34,12 +34,12 @@ const FolderInput: React.FC = () => {
     }
   }, [folderUrl, isValidating]);
 
-  // Auto-navigate to chat when processing completes
+  // Auto-navigate to chat when processing and learning (summary) completes
   useEffect(() => {
-    if (status?.type === 'processing_complete' && processedFolderId) {
-      console.log('Processing complete, will navigate in 3 seconds');
+    if (status?.type === 'summary_complete' && processedFolderId) {
+      console.log('Summary complete, will navigate in 1 second');
 
-      // Wait 3 seconds to show completion state, then create conversation and navigate
+      // Wait 1 second to show completion state, then create conversation and navigate
       const timer = setTimeout(async () => {
         try {
           console.log('Creating initial conversation for folder:', processedFolderId);
@@ -50,7 +50,7 @@ const FolderInput: React.FC = () => {
           console.error('Failed to create initial conversation, navigating anyway:', err);
           navigate(`/chat/${processedFolderId}`);
         }
-      }, 3000);  // Increased to 3 seconds to ensure UI is visible
+      }, 1000);  // 1 second delay to show completion state
 
       return () => clearTimeout(timer);
     }

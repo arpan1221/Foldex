@@ -147,7 +147,7 @@ class ChainOptimizer:
         self,
         query: str,
         context: str,
-        max_tokens: int = 4000,
+        max_tokens: int = 2000,
     ) -> bool:
         """Check if content fits in context window.
 
@@ -168,7 +168,7 @@ class ChainOptimizer:
     def truncate_context(
         self,
         context: str,
-        max_tokens: int = 4000,
+        max_tokens: int = 2000,
     ) -> str:
         """Truncate context to fit in window.
 

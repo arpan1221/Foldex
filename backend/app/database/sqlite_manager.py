@@ -6,6 +6,8 @@ import json
 import uuid
 
 from sqlalchemy import select, update, delete, func, text
+from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -20,6 +22,7 @@ from app.models.database import (
     FolderRecord,
 )
 from app.core.exceptions import DatabaseError
+from app.utils.datetime_utils import get_eastern_time
 
 logger = structlog.get_logger(__name__)
 
@@ -176,8 +179,10 @@ class SQLiteManager:
         """
         try:
             async with self._get_db_manager().get_session() as session:
+                # Use selectinload to eagerly load the file relationship
                 query = (
-                    select(ChunkRecord, FileRecord)
+                    select(ChunkRecord)
+                    .options(selectinload(ChunkRecord.file))
                     .join(FileRecord, ChunkRecord.file_id == FileRecord.file_id)
                     .where(FileRecord.folder_id == folder_id)
                 )
@@ -186,11 +191,18 @@ class SQLiteManager:
                     query = query.limit(limit)
 
                 result = await session.execute(query)
-                rows = result.all()
+                chunk_records = result.scalars().all()
 
                 chunks = []
-                for chunk_record, file_record in rows:
-                    metadata = chunk_record.metadata.copy()
+                for chunk_record in chunk_records:
+                    file_record = chunk_record.file
+                    # Access metadata via chunk_metadata attribute (SQLAlchemy model uses chunk_metadata)
+                    if hasattr(chunk_record, "chunk_metadata") and chunk_record.chunk_metadata:
+                        metadata = dict(chunk_record.chunk_metadata)
+                    elif hasattr(chunk_record, "metadata") and chunk_record.metadata:
+                        metadata = dict(chunk_record.metadata)
+                    else:
+                        metadata = {}
                     metadata["file_name"] = file_record.file_name
 
                     chunks.append(
@@ -240,7 +252,8 @@ class SQLiteManager:
                 search_pattern = f"%{query}%"
 
                 query_stmt = (
-                    select(ChunkRecord, FileRecord)
+                    select(ChunkRecord)
+                    .options(selectinload(ChunkRecord.file))
                     .join(FileRecord, ChunkRecord.file_id == FileRecord.file_id)
                     .where(
                         FileRecord.folder_id == folder_id,
@@ -250,11 +263,18 @@ class SQLiteManager:
                 )
 
                 result = await session.execute(query_stmt)
-                rows = result.all()
+                chunk_records = result.scalars().all()
 
                 chunks = []
-                for chunk_record, file_record in rows:
-                    metadata = chunk_record.metadata.copy()
+                for chunk_record in chunk_records:
+                    file_record = chunk_record.file
+                    # Access metadata via chunk_metadata attribute (SQLAlchemy model uses chunk_metadata)
+                    if hasattr(chunk_record, "chunk_metadata") and chunk_record.chunk_metadata:
+                        metadata = dict(chunk_record.chunk_metadata)
+                    elif hasattr(chunk_record, "metadata") and chunk_record.metadata:
+                        metadata = dict(chunk_record.metadata)
+                    else:
+                        metadata = {}
                     metadata["file_name"] = file_record.file_name
 
                     chunks.append(
@@ -692,13 +712,10 @@ class SQLiteManager:
             if google_token_expiry:
                 user.google_token_expiry = google_token_expiry
             user.updated_at = datetime.utcnow()
-            await session.refresh(user)
 
             logger.info("User updated", user_id=user.user_id, email=email)
         else:
             # Create new user
-            import uuid
-
             user_id = str(uuid.uuid4())
             user = UserRecord(
                 user_id=user_id,
@@ -712,10 +729,42 @@ class SQLiteManager:
                 google_token_expiry=google_token_expiry,
             )
             session.add(user)
-            await session.flush()  # Flush to get the ID without committing
-            await session.refresh(user)
 
-            logger.info("User created", user_id=user_id, email=email)
+            try:
+                await session.flush()  # Flush to get the ID without committing
+                logger.info("User created", user_id=user_id, email=email)
+            except IntegrityError as e:
+                # User already exists (race condition - another request created it)
+                await session.rollback()
+                logger.warning(
+                    "User creation failed (already exists), fetching existing user",
+                    email=email,
+                    google_id=google_id,
+                )
+                
+                # Query again to get the existing user
+                stmt = select(UserRecord).where(
+                    (UserRecord.google_id == google_id) | (UserRecord.email == email)
+                )
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+                
+                if not user:
+                    # This should never happen, but handle it anyway
+                    raise DatabaseError(
+                        f"User creation failed with IntegrityError but user not found: {str(e)}"
+                    )
+                
+                # Update existing user with new token info
+                if google_access_token:
+                    user.google_access_token = google_access_token
+                if google_refresh_token:
+                    user.google_refresh_token = google_refresh_token
+                if google_token_expiry:
+                    user.google_token_expiry = google_token_expiry
+                user.updated_at = datetime.utcnow()
+                
+                logger.info("User updated after race condition", user_id=user.user_id, email=email)
 
         return {
             "user_id": user.user_id,
@@ -1101,6 +1150,166 @@ class SQLiteManager:
         except Exception as e:
             logger.error("Failed to delete folder", folder_id=folder_id, error=str(e), exc_info=True)
             raise DatabaseError(f"Failed to delete folder: {str(e)}") from e
+
+    async def get_chunks_by_file(self, file_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get chunks for a specific file.
+
+        Args:
+            file_id: File ID
+            limit: Optional limit on number of chunks to return
+
+        Returns:
+            List of chunk dictionaries
+
+        Raises:
+            DatabaseError: If retrieval fails
+        """
+        try:
+            async with self._get_db_manager().get_session() as session:
+                stmt = select(ChunkRecord).where(ChunkRecord.file_id == file_id)
+
+                if limit:
+                    stmt = stmt.limit(limit)
+
+                result = await session.execute(stmt)
+                chunks = result.scalars().all()
+
+                return [
+                    {
+                        "chunk_id": chunk.chunk_id,
+                        "file_id": chunk.file_id,
+                        "content": chunk.content,
+                        "metadata": chunk.chunk_metadata or {},
+                    }
+                    for chunk in chunks
+                ]
+        except Exception as e:
+            logger.error("Failed to get chunks by file", file_id=file_id, error=str(e))
+            raise DatabaseError(f"Failed to get chunks: {str(e)}") from e
+
+    async def update_folder_learning_status(self, folder_id: str, status: str) -> None:
+        """Update folder learning status.
+
+        Args:
+            folder_id: Folder ID
+            status: Learning status (learning_pending, learning_in_progress, learning_complete, learning_failed)
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            async with self._get_db_manager().get_session() as session:
+                stmt = update(FolderRecord).where(
+                    FolderRecord.folder_id == folder_id
+                ).values(
+                    learning_status=status,
+                    updated_at=datetime.utcnow()
+                )
+                await session.execute(stmt)
+                await session.commit()
+
+                logger.info("Folder learning status updated", folder_id=folder_id, status=status)
+        except Exception as e:
+            logger.error("Failed to update folder learning status", folder_id=folder_id, error=str(e))
+            raise DatabaseError(f"Failed to update learning status: {str(e)}") from e
+
+    async def update_folder_summary(
+        self,
+        folder_id: str,
+        summary: str,
+        insights: Dict[str, Any],
+        file_type_distribution: Dict[str, int],
+        entity_summary: Dict[str, Any],
+        relationship_summary: List[Dict[str, Any]],
+        capabilities: List[str],
+        graph_statistics: Dict[str, Any],
+        learning_completed_at: datetime,
+    ) -> None:
+        """Update folder with complete summary data.
+
+        Args:
+            folder_id: Folder ID
+            summary: Master folder summary
+            insights: Structured insights dictionary
+            file_type_distribution: File type counts
+            entity_summary: Top entities summary
+            relationship_summary: Relationship summary
+            capabilities: List of capabilities
+            graph_statistics: Graph metrics
+            learning_completed_at: Completion timestamp
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            async with self._get_db_manager().get_session() as session:
+                stmt = update(FolderRecord).where(
+                    FolderRecord.folder_id == folder_id
+                ).values(
+                    summary=summary,
+                    insights=insights,
+                    file_type_distribution=file_type_distribution,
+                    entity_summary=entity_summary,
+                    relationship_summary=relationship_summary,
+                    capabilities=capabilities,
+                    graph_statistics=graph_statistics,
+                    learning_status="learning_complete",
+                    learning_completed_at=learning_completed_at,
+                    updated_at=get_eastern_time()
+                )
+                await session.execute(stmt)
+                await session.commit()
+
+                logger.info("Folder summary updated", folder_id=folder_id)
+        except Exception as e:
+            logger.error("Failed to update folder summary", folder_id=folder_id, error=str(e))
+            raise DatabaseError(f"Failed to update folder summary: {str(e)}") from e
+
+    async def get_folder_summary(self, folder_id: str) -> Optional[Dict[str, Any]]:
+        """Get folder summary data.
+
+        Args:
+            folder_id: Folder ID
+
+        Returns:
+            Dictionary with summary, insights, capabilities, etc. or None if not found
+
+        Raises:
+            DatabaseError: If retrieval fails
+        """
+        try:
+            async with self._get_db_manager().get_session() as session:
+                stmt = select(FolderRecord).where(FolderRecord.folder_id == folder_id)
+                result = await session.execute(stmt)
+                folder = result.scalar_one_or_none()
+
+                if not folder:
+                    return None
+
+                # Convert datetime to ISO string for JSON serialization
+                learning_completed_at = None
+                if folder.learning_completed_at:
+                    if isinstance(folder.learning_completed_at, datetime):
+                        learning_completed_at = folder.learning_completed_at.isoformat()
+                    else:
+                        learning_completed_at = folder.learning_completed_at
+
+                return {
+                    "folder_id": folder.folder_id,
+                    "folder_name": folder.folder_name,
+                    "summary": folder.summary,
+                    "learning_status": folder.learning_status,
+                    "insights": folder.insights,
+                    "file_type_distribution": folder.file_type_distribution,
+                    "entity_summary": folder.entity_summary,
+                    "relationship_summary": folder.relationship_summary,
+                    "capabilities": folder.capabilities,
+                    "graph_statistics": folder.graph_statistics,
+                    "learning_completed_at": learning_completed_at,
+                }
+        except Exception as e:
+            logger.error("Failed to get folder summary", folder_id=folder_id, error=str(e))
+            raise DatabaseError(f"Failed to get folder summary: {str(e)}") from e
 
     async def close(self) -> None:
         """Close database connections.

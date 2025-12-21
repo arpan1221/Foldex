@@ -735,6 +735,102 @@ class GoogleDriveService:
             "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         }
         return export_map.get(google_mime_type, "application/pdf")
+    
+    async def export_file(
+        self,
+        file_id: str,
+        export_mime_type: str,
+        access_token: str,
+        user_id: str,
+    ) -> str:
+        """Export Google Workspace file to specified format.
+
+        Args:
+            file_id: Google Drive file ID
+            export_mime_type: Target MIME type for export
+            access_token: Google OAuth2 access token
+            user_id: Authenticated user ID
+
+        Returns:
+            Local file path of exported file
+
+        Raises:
+            ProcessingError: If export fails
+        """
+        try:
+            self._build_service(access_token)
+
+            # Get file metadata
+            file_metadata = await self.get_file_metadata(file_id, access_token)
+            file_name = file_metadata.get("name", file_id)
+
+            # Create cache directory
+            cache_dir = os.path.join(settings.CACHE_DIR, user_id)
+            ensure_directory(cache_dir)
+
+            # Determine file extension from export MIME type
+            ext_map = {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                "application/pdf": ".pdf",
+            }
+            file_ext = ext_map.get(export_mime_type, ".pdf")
+            local_filename = sanitize_filename(f"{file_id}{file_ext}")
+            local_path = os.path.join(cache_dir, local_filename)
+
+            # Check if already exported
+            if os.path.exists(local_path):
+                logger.debug("Exported file already exists", file_id=file_id, path=local_path)
+                return local_path
+
+            await self.rate_limiter.acquire()
+
+            if not self.service:
+                raise ProcessingError("Failed to initialize Google Drive service")
+
+            # Export file
+            request = self.service.files().export_media(fileId=file_id, mimeType=export_mime_type)
+
+            # Download exported file
+            with open(local_path, "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    if status:
+                        logger.debug(
+                            "Export progress",
+                            file_id=file_id,
+                            progress=int(status.progress() * 100),
+                        )
+
+            file_size = os.path.getsize(local_path)
+            logger.info(
+                "File exported",
+                file_id=file_id,
+                file_name=file_name,
+                export_format=export_mime_type,
+                path=local_path,
+                size=file_size,
+            )
+
+            # Store in cache
+            self.file_cache.store_file(file_id, user_id, Path(local_path))
+
+            return local_path
+
+        except HttpError as e:
+            if e.resp.status == 404:
+                raise ProcessingError(f"File not found: {file_id}")
+            elif e.resp.status == 403:
+                raise AuthenticationError("Access denied to file")
+            else:
+                logger.error("Failed to export file", file_id=file_id, error=str(e))
+                raise ProcessingError(f"Failed to export file: {str(e)}")
+        except Exception as e:
+            logger.error("Failed to export file", file_id=file_id, error=str(e), exc_info=True)
+            raise ProcessingError(f"Failed to export file: {str(e)}") from e
 
     def is_supported_file_type(self, mime_type: str) -> bool:
         """Check if file type is supported for processing.
@@ -746,7 +842,7 @@ class GoogleDriveService:
             True if file type is supported
         """
         return mime_type in SUPPORTED_MIME_TYPES or any(
-            mime_type.startswith(prefix) for prefix in ["text/", "audio/", "video/"]
+            mime_type.startswith(prefix) for prefix in ["text/", "audio/", "video/", "image/"]
         )
 
     async def get_folder_metadata(

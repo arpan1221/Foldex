@@ -75,16 +75,18 @@ class LangChainReranker:
         query: str,
         documents: List[Document],
         top_k: int = 10,
+        min_relevance_score: Optional[float] = None,
     ) -> List[Tuple[Document, float]]:
-        """Rerank documents by relevance to query.
+        """Rerank documents by relevance to query with optional threshold filtering.
 
         Args:
             query: Search query
             documents: List of Document objects to rerank
             top_k: Number of top documents to return
+            min_relevance_score: Optional minimum relevance score threshold (0.0-1.0)
 
         Returns:
-            List of tuples (Document, relevance_score) sorted by score
+            List of tuples (Document, relevance_score) sorted by score, filtered by threshold
         """
         try:
             if not documents:
@@ -110,14 +112,32 @@ class LangChainReranker:
                     documents=documents,
                 )
 
-            # Sort by score (descending) and return top_k
+            # Sort by score (descending)
             scored_documents.sort(key=lambda x: x[1], reverse=True)
+
+            # Apply relevance threshold if specified
+            if min_relevance_score is not None:
+                filtered_documents = [
+                    (doc, score) for doc, score in scored_documents
+                    if score >= min_relevance_score
+                ]
+                logger.debug(
+                    "Applied relevance threshold",
+                    original_count=len(scored_documents),
+                    filtered_count=len(filtered_documents),
+                    threshold=min_relevance_score,
+                )
+                scored_documents = filtered_documents
+
+            # Return top_k (or fewer if threshold filtered some out)
             top_documents = scored_documents[:top_k]
 
-            logger.debug(
+            logger.info(
                 "Reranking completed",
                 top_k=len(top_documents),
                 max_score=top_documents[0][1] if top_documents else 0.0,
+                min_score=top_documents[-1][1] if top_documents else 0.0,
+                filtered=min_relevance_score is not None,
             )
 
             return top_documents

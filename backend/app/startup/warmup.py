@@ -11,6 +11,7 @@ import structlog
 from app.config.settings import settings
 from app.rag.ttft_optimization import warmup_model, get_ttft_optimizer
 from app.rag.llm_chains import OllamaLLM
+from app.rag.query_classifier import get_query_classifier
 
 logger = structlog.get_logger(__name__)
 
@@ -45,6 +46,47 @@ async def warmup_llm_model():
         # Don't fail startup, just log
         logger.error(
             "LLM model warmup failed",
+            error=str(e),
+            elapsed_seconds=round(time.time() - start_time, 2)
+        )
+
+
+async def warmup_query_classifier_model():
+    """Pre-warm the query classifier LLM model (llama3.2:1b) on startup.
+    
+    This reduces first-request latency for query classification by loading
+    the model into memory and running a simple inference.
+    """
+    if not settings.ENABLE_MODEL_WARMUP:
+        logger.info("Model warmup disabled in settings, skipping query classifier warmup")
+        return
+    
+    logger.info("Starting query classifier model warmup (llama3.2:1b)")
+    start_time = time.time()
+    
+    try:
+        # Get query classifier instance (this will initialize the LLM)
+        classifier = get_query_classifier(use_llm=True)
+        
+        # Only warmup if LLM is actually initialized
+        if classifier.llm:
+            # Warmup the model by running a simple classification
+            llm_instance = classifier.llm.get_llm()
+            await warmup_model(llm_instance)
+            
+            elapsed = time.time() - start_time
+            logger.info(
+                "Query classifier model warmup completed",
+                model="llama3.2:1b",
+                elapsed_seconds=round(elapsed, 2)
+            )
+        else:
+            logger.info("Query classifier LLM not available, skipping warmup (pattern matching will be used)")
+    
+    except Exception as e:
+        # Don't fail startup, just log
+        logger.error(
+            "Query classifier model warmup failed",
             error=str(e),
             elapsed_seconds=round(time.time() - start_time, 2)
         )
@@ -94,7 +136,8 @@ async def startup_warmup():
 
     This function orchestrates all warmup tasks including:
     - TTFT optimizer initialization
-    - LLM model pre-warming
+    - Main LLM model pre-warming (llama3.2:3b)
+    - Query classifier model pre-warming (llama3.2:1b)
     """
     logger.info("Starting application warmup")
     start_time = time.time()
@@ -103,6 +146,7 @@ async def startup_warmup():
     tasks = [
         initialize_ttft_optimizer(),
         warmup_llm_model(),
+        warmup_query_classifier_model(),
     ]
 
     # Run concurrently

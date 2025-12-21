@@ -27,64 +27,7 @@ logger = structlog.get_logger(__name__)
 
 
 class CitationFormatter:
-    """Formats citations in different styles."""
-
-    @staticmethod
-    def format_apa(
-        citation: Dict[str, Any],
-    ) -> str:
-        """Format citation in APA style.
-
-        Args:
-            citation: Citation dictionary
-
-        Returns:
-            APA-formatted citation string
-        """
-        file_name = citation.get("file_name", "Unknown")
-        page_number = citation.get("page_number")
-
-        if page_number:
-            return f"({file_name}, p. {page_number})"
-        return f"({file_name})"
-
-    @staticmethod
-    def format_mla(
-        citation: Dict[str, Any],
-    ) -> str:
-        """Format citation in MLA style.
-
-        Args:
-            citation: Citation dictionary
-
-        Returns:
-            MLA-formatted citation string
-        """
-        file_name = citation.get("file_name", "Unknown")
-        page_number = citation.get("page_number")
-
-        if page_number:
-            return f"({file_name} {page_number})"
-        return f"({file_name})"
-
-    @staticmethod
-    def format_chicago(
-        citation: Dict[str, Any],
-    ) -> str:
-        """Format citation in Chicago style.
-
-        Args:
-            citation: Citation dictionary
-
-        Returns:
-            Chicago-formatted citation string
-        """
-        file_name = citation.get("file_name", "Unknown")
-        page_number = citation.get("page_number")
-
-        if page_number:
-            return f"({file_name}, {page_number})"
-        return f"({file_name})"
+    """Formats citations in simple style."""
 
     @staticmethod
     def format_simple(
@@ -162,7 +105,7 @@ class CitationService:
         Args:
             question: User question
             query_type: Optional query type
-            citation_style: Citation style (apa, mla, chicago, simple)
+            citation_style: Citation style (always uses simple format)
 
         Returns:
             Dictionary with answer and formatted citations
@@ -208,23 +151,16 @@ class CitationService:
         citation: Dict[str, Any],
         style: str,
     ) -> str:
-        """Format citation in specified style.
+        """Format citation in simple style.
 
         Args:
             citation: Citation dictionary
-            style: Citation style
+            style: Citation style (ignored, always uses simple)
 
         Returns:
             Formatted citation string
         """
-        if style == "apa":
-            return self.citation_formatter.format_apa(citation)
-        elif style == "mla":
-            return self.citation_formatter.format_mla(citation)
-        elif style == "chicago":
-            return self.citation_formatter.format_chicago(citation)
-        else:
-            return self.citation_formatter.format_simple(citation)
+        return self.citation_formatter.format_simple(citation)
 
     def assess_citation_confidence(
         self,

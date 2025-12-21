@@ -11,7 +11,7 @@ class DocumentChunk(BaseModel):
     chunk_id: str = Field(..., description="Unique chunk identifier")
     content: str = Field(..., min_length=1, max_length=50000, description="Chunk content")
     file_id: str = Field(..., description="Source file identifier")
-    metadata: Dict[str, Union[str, int, float]] = Field(
+    metadata: Dict[str, Union[str, int, float, None]] = Field(
         default_factory=dict, description="Chunk metadata"
     )
     embedding: Optional[List[float]] = Field(

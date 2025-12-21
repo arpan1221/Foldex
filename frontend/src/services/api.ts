@@ -24,6 +24,7 @@ import {
   Citation,
   ChatMessage,
   Conversation,
+  FolderSummary,
 } from './types';
 
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL as string) || 'http://localhost:8000';
@@ -357,6 +358,40 @@ class FolderService {
       throw new APIException('Failed to load knowledge graph', undefined, undefined, { originalError: error });
     }
   }
+
+  /**
+   * Get folder summary and learning status.
+   */
+  async getFolderSummary(folderId: string): Promise<FolderSummary> {
+    try {
+      const response = await apiClient.get<FolderSummary>(
+        `/api/v1/folders/${folderId}/summary`
+      );
+      return handleResponse(response);
+    } catch (error) {
+      if (error instanceof APIException) {
+        throw error;
+      }
+      throw new APIException('Failed to get folder summary', undefined, undefined, { originalError: error });
+    }
+  }
+
+  /**
+   * Trigger folder summary regeneration.
+   */
+  async regenerateFolderSummary(folderId: string): Promise<{ message: string; status: string }> {
+    try {
+      const response = await apiClient.post<{ message: string; status: string }>(
+        `/api/v1/folders/${folderId}/summary/regenerate`
+      );
+      return handleResponse(response);
+    } catch (error) {
+      if (error instanceof APIException) {
+        throw error;
+      }
+      throw new APIException('Failed to regenerate folder summary', undefined, undefined, { originalError: error });
+    }
+  }
 }
 
 /**
@@ -442,19 +477,21 @@ class ChatService {
 
   /**
    * Send a chat query and stream the AI response.
-   * 
+   *
    * @param request Chat request
    * @param onToken Callback for each token chunk
    * @param onCitations Callback when citations are received
    * @param onDone Callback when streaming is complete
    * @param onError Callback for errors
+   * @param onStatus Callback for status updates (e.g., "Retrieving context...")
    */
   async queryStream(
     request: ChatRequest,
     onToken: (token: string) => void,
     onCitations: (citations: Citation[]) => void,
-    onDone: (conversationId: string) => void,
-    onError: (error: Error) => void
+    onDone: (conversationId: string, debugData?: any) => void,
+    onError: (error: Error) => void,
+    onStatus?: (message: string) => void
   ): Promise<void> {
     try {
       const token = localStorage.getItem('access_token');
@@ -497,13 +534,18 @@ class ChatService {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              
-              if (data.type === 'token') {
+
+              if (data.type === 'status') {
+                // Status update (e.g., "Retrieving context...", "Generating response...")
+                if (onStatus) {
+                  onStatus(data.message);
+                }
+              } else if (data.type === 'token') {
                 onToken(data.content);
               } else if (data.type === 'citations') {
                 onCitations(data.citations || []);
               } else if (data.type === 'done') {
-                onDone(data.conversation_id);
+                onDone(data.conversation_id, data.debug);
                 return;
               } else if (data.type === 'error') {
                 throw new APIException(data.content || 'Streaming error');

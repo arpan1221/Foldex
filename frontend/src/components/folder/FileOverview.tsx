@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { FileMetadata } from '../../services/types';
 import { formatFileSize } from '../../utils/formatters';
+import FileBadge from '../common/FileBadge';
 
 /**
  * File type icon mapping
@@ -97,6 +98,44 @@ const FileOverview: React.FC<FileOverviewProps> = ({ files, isProcessing = false
 
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
+  // Calculate file type distribution
+  const fileTypeDistribution = useMemo(() => {
+    const distribution: Record<string, number> = {};
+    
+    files.forEach((file) => {
+      const type = getFileTypeFromMime(file.mime_type);
+      distribution[type] = (distribution[type] || 0) + 1;
+    });
+    
+    return distribution;
+  }, [files]);
+
+  const getFileTypeFromMime = (mimeType: string): string => {
+    if (mimeType.includes('pdf')) return 'PDF';
+    if (mimeType.includes('word') || mimeType.includes('document')) return 'Document';
+    if (mimeType.includes('sheet') || mimeType.includes('excel')) return 'Spreadsheet';
+    if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return 'Presentation';
+    if (mimeType.includes('audio')) return 'Audio';
+    if (mimeType.includes('video')) return 'Video';
+    if (mimeType.includes('image')) return 'Image';
+    if (mimeType.includes('text') && (
+      mimeType.includes('javascript') || 
+      mimeType.includes('python') || 
+      mimeType.includes('java')
+    )) return 'Code';
+    return 'Other';
+  };
+
+  // Estimate processing time (rough: 1MB ≈ 2 seconds)
+  const estimatedProcessingTime = useMemo(() => {
+    const totalMB = totalSize / (1024 * 1024);
+    const seconds = Math.ceil(totalMB * 2);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  }, [totalSize]);
+
   return (
     <div className="bg-gray-800/50 backdrop-blur-sm border-2 border-gray-700 rounded-lg p-6 shadow-xl">
       {/* Header */}
@@ -168,12 +207,33 @@ const FileOverview: React.FC<FileOverviewProps> = ({ files, isProcessing = false
         ))}
       </div>
 
+      {/* File Type Distribution */}
+      {Object.keys(fileTypeDistribution).length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-700">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Files by Type</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {Object.entries(fileTypeDistribution).map(([type, count]) => (
+              <div key={type} className="flex items-center justify-between text-xs bg-gray-800/30 rounded px-2 py-1">
+                <span className="text-gray-400">{type}</span>
+                <span className="text-gray-200 font-medium">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Summary */}
-      <div className="mt-4 pt-4 border-t border-gray-700">
+      <div className="mt-4 pt-4 border-t border-gray-700 space-y-2">
         <div className="flex items-center justify-between text-sm">
           <span className="text-gray-400">Total size</span>
           <span className="text-gray-200 font-medium">{formatFileSize(totalSize)}</span>
         </div>
+        {isProcessing && (
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-400">Est. processing time</span>
+            <span className="text-gray-200 font-medium">{estimatedProcessingTime}</span>
+          </div>
+        )}
       </div>
     </div>
   );

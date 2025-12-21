@@ -271,7 +271,7 @@ class MemoryManager:
 class ContextWindowManager:
     """Manages context window for conversations."""
 
-    def __init__(self, max_tokens: int = 4000):
+    def __init__(self, max_tokens: int = 2000):
         """Initialize context window manager.
 
         Args:

@@ -554,19 +554,88 @@ async def get_folder_metadata(
 
         # Get folder metadata from Google Drive
         drive_service = GoogleDriveService()
-        folder_info = await drive_service.get_folder_metadata(folder_id, google_token)
-
+        try:
+            folder_info = await drive_service.get_folder_metadata(folder_id, google_token)
+        except Exception as e:
+            logger.error(
+                "Failed to get folder metadata from Google Drive",
+                folder_id=folder_id,
+                error=str(e),
+                exc_info=True
+            )
+            # Fallback: try to get from database
+            db_manager = SQLiteManager()
+            folders = await db_manager.get_user_folders(user_id)
+            folder = next((f for f in folders if f["folder_id"] == folder_id), None)
+            
+            if folder:
+                # Use database data as fallback
+                return FolderMetadata(
+                    folder_id=folder_id,
+                    folder_name=folder.get("folder_name", folder_id),
+                    file_count=folder.get("file_count", 0),
+                    folder_count=0,  # Database doesn't track folder count
+                    status=folder.get("status", "pending"),
+                    created_at=folder.get("created_at").isoformat() if folder.get("created_at") else None,
+                    updated_at=folder.get("updated_at").isoformat() if folder.get("updated_at") else None,
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Folder not found"
+                )
 
         # Get file and folder counts from Google Drive
-        drive_items = await drive_service.list_folder_files(folder_id, google_token, user_id)
-        file_count = 0
-        folder_count = 0
-        for item in drive_items:
-            mime_type = item.get("mimeType", "")
-            if mime_type == "application/vnd.google-apps.folder":
-                folder_count += 1
-            else:
-                file_count += 1
+        try:
+            drive_items = await drive_service.list_folder_files(folder_id, google_token, user_id)
+            file_count = 0
+            folder_count = 0
+            for item in drive_items:
+                mime_type = item.get("mimeType", "")
+                if mime_type == "application/vnd.google-apps.folder":
+                    folder_count += 1
+                else:
+                    file_count += 1
+        except Exception as e:
+            logger.warning(
+                "Failed to get folder file counts from Google Drive",
+                folder_id=folder_id,
+                error=str(e)
+            )
+            # Fallback to database counts
+            db_manager = SQLiteManager()
+            folders = await db_manager.get_user_folders(user_id)
+            folder = next((f for f in folders if f["folder_id"] == folder_id), None)
+            file_count = folder.get("file_count", 0) if folder else 0
+            folder_count = 0
+
+        # Parse dates from Google Drive format
+        created_at = None
+        updated_at = None
+        created_time = folder_info.get("createdTime")
+        modified_time = folder_info.get("modifiedTime")
+        
+        if created_time:
+            try:
+                from datetime import datetime
+                if isinstance(created_time, str):
+                    created_at = datetime.fromisoformat(created_time.replace('Z', '+00:00')).isoformat()
+                else:
+                    created_at = created_time.isoformat() if hasattr(created_time, 'isoformat') else str(created_time)
+            except Exception as e:
+                logger.warning("Failed to parse created_time", error=str(e))
+                created_at = str(created_time) if created_time else None
+                
+        if modified_time:
+            try:
+                from datetime import datetime
+                if isinstance(modified_time, str):
+                    updated_at = datetime.fromisoformat(modified_time.replace('Z', '+00:00')).isoformat()
+                else:
+                    updated_at = modified_time.isoformat() if hasattr(modified_time, 'isoformat') else str(modified_time)
+            except Exception as e:
+                logger.warning("Failed to parse modified_time", error=str(e))
+                updated_at = str(modified_time) if modified_time else None
 
         return FolderMetadata(
             folder_id=folder_id,
@@ -574,8 +643,8 @@ async def get_folder_metadata(
             file_count=file_count,
             folder_count=folder_count,
             status="completed" if file_count > 0 or folder_count > 0 else "pending",
-            created_at=folder_info.get("createdTime"),
-            updated_at=folder_info.get("modifiedTime"),
+            created_at=created_at,
+            updated_at=updated_at,
         )
 
     except ValidationError as e:

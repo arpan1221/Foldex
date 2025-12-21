@@ -11,7 +11,15 @@ from app.processors.text_processor import TextProcessor
 from app.processors.audio_processor import AudioProcessor
 from app.processors.code_processor import CodeProcessor
 from app.core.exceptions import DocumentProcessingError
-from app.utils.file_utils import get_mime_type, validate_file_size, extract_file_metadata
+from app.utils.file_utils import get_mime_type, validate_file_size
+
+# Try to import UnstructuredProcessor (may not be available)
+_UNSTRUCTURED_AVAILABLE = False
+try:
+    from app.processors.unstructured_processor import UnstructuredProcessor as _UnstructuredProcessor  # type: ignore
+    _UNSTRUCTURED_AVAILABLE = True
+except ImportError:
+    _UnstructuredProcessor = None  # type: ignore[misc,assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -24,13 +32,46 @@ class DocumentProcessor:
     """
 
     def __init__(self):
-        """Initialize document processor with all available processors."""
-        self.processors: List[BaseProcessor] = [
-            PDFProcessor(),
-            TextProcessor(),
+        """Initialize document processor with all available processors.
+        
+        UnstructuredProcessor is prioritized for all unstructured document types
+        (PDFs, Office docs, text, CSV, HTML, images) to ensure unified processing.
+        Only AudioProcessor and CodeProcessor handle specialized file types.
+        """
+        self.processors: List[BaseProcessor] = []
+        
+        # Add UnstructuredProcessor first if available (handles PDFs, Office docs, text, CSV, HTML, images)
+        # This ensures unified processing format for all unstructured document types
+        if _UNSTRUCTURED_AVAILABLE and _UnstructuredProcessor is not None:
+            try:
+                self.processors.append(_UnstructuredProcessor())
+                logger.info(
+                    "UnstructuredProcessor added to DocumentProcessor (primary processor for unstructured documents)"
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to initialize UnstructuredProcessor",
+                    error=str(e)
+                )
+                # Fallback: Add PDFProcessor and TextProcessor if UnstructuredProcessor fails
+                self.processors.extend([
+                    PDFProcessor(),
+                    TextProcessor(),
+                ])
+        else:
+            # Fallback: Use specialized processors if UnstructuredProcessor not available
+            logger.info("UnstructuredProcessor not available, using fallback processors")
+            self.processors.extend([
+                PDFProcessor(),
+                TextProcessor(),
+            ])
+        
+        # Add specialized processors (only for audio and code files)
+        # These handle file types that UnstructuredProcessor doesn't process
+        self.processors.extend([
             AudioProcessor(),
             CodeProcessor(),
-        ]
+        ])
         self.logger = structlog.get_logger(__name__)
 
     async def process_file(
@@ -94,6 +135,7 @@ class DocumentProcessor:
                 "file_name": file_name,
                 "mime_type": mime_type,
                 "file_size": file_metadata.get("size", 0),
+                "file_id": file_id,  # Include file_id in metadata
                 "created_time": file_metadata.get("createdTime"),
                 "modified_time": file_metadata.get("modifiedTime"),
             }

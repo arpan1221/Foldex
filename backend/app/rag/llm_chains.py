@@ -13,88 +13,106 @@ try:
     from langchain_community.llms import Ollama
     from langchain_community.chat_models import ChatOllama
     from langchain.chains import ConversationalRetrievalChain
-    from langchain.callbacks.base import BaseCallbackHandler
-    from langchain.schema import LLMResult
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.schema import LLMResult
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     # Fallback for older LangChain versions
     try:
-        from langchain.llms import Ollama
-        from langchain.chat_models import ChatOllama
+        from langchain_community.llms import Ollama
+        from langchain_community.chat_models import ChatOllama
         from langchain.chains import ConversationalRetrievalChain
         from langchain.callbacks.base import BaseCallbackHandler
         from langchain.schema import LLMResult
         LANGCHAIN_AVAILABLE = True
     except ImportError:
-        LANGCHAIN_AVAILABLE = False
-        Ollama = None
-        ChatOllama = None
-        ConversationalRetrievalChain = None
-        BaseCallbackHandler = None
-        LLMResult = None
+        # Final fallback
+        try:
+            from langchain.llms import Ollama
+            from langchain.chat_models import ChatOllama
+            from langchain.chains import ConversationalRetrievalChain
+            from langchain.callbacks.base import BaseCallbackHandler
+            from langchain.schema import LLMResult
+            LANGCHAIN_AVAILABLE = True
+        except ImportError:
+            LANGCHAIN_AVAILABLE = False
+            Ollama = None
+            ChatOllama = None
+            ConversationalRetrievalChain = None
+            BaseCallbackHandler = None
+            LLMResult = None
 
 from app.config.settings import settings
 from app.core.exceptions import ProcessingError
 from app.rag.memory import ConversationMemory
 from app.rag.prompt_management import PromptManager, get_prompt_manager
 from app.rag.vector_store import LangChainVectorStore
+from app.rag.stream_sanitizer import ThinkTagStreamFilter
 
 logger = structlog.get_logger(__name__)
 
 
-class StreamingCallbackHandler(BaseCallbackHandler):
-    """Callback handler for streaming LLM responses."""
+if not LANGCHAIN_AVAILABLE or BaseCallbackHandler is None:
+    # Create a dummy class if LangChain is not available
+    class StreamingCallbackHandler:
+        def __init__(self, callback=None):
+            self.callback = callback
+            self.tokens = []
+else:
+    class StreamingCallbackHandler(BaseCallbackHandler):
+        """Callback handler for streaming LLM responses."""
 
-    def __init__(self, callback: Optional[Callable[[str], None]] = None):
-        """Initialize streaming callback handler.
+        def __init__(self, callback: Optional[Callable[[str], None]] = None):
+            """Initialize streaming callback handler.
 
-        Args:
-            callback: Optional callback function to receive tokens
-        """
-        super().__init__()
-        self.callback = callback
-        self.tokens: List[str] = []
+            Args:
+                callback: Optional callback function to receive tokens
+            """
+            super().__init__()
+            self.callback = callback
+            self.tokens: List[str] = []
+            self._filter = ThinkTagStreamFilter()
 
-    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> None:
-        """Log when LLM starts."""
-        logger.info("LLM generation started", prompts_count=len(prompts))
+        def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> None:
+            """Log when LLM starts."""
+            logger.info("LLM generation started", prompts_count=len(prompts))
 
-    def on_chat_model_start(self, serialized: Dict[str, Any], messages: List[List[Any]], **kwargs: Any) -> None:
-        """Log when Chat Model starts."""
-        logger.info("Chat Model generation started", messages_count=len(messages))
+        def on_chat_model_start(self, serialized: Dict[str, Any], messages: List[List[Any]], **kwargs: Any) -> None:
+            """Log when Chat Model starts."""
+            logger.info("Chat Model generation started", messages_count=len(messages))
 
-    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
-        """Handle new token from LLM."""
-        # VERY AGGRESSIVE LOGGING
-        print(f"DEBUG: on_llm_new_token called with token: '{token}'")
-        
-        if not token:
-            return
-            
-        self.tokens.append(token)
-        if self.callback:
-            try:
-                self.callback(token)
-            except Exception as e:
-                print(f"DEBUG: Streaming callback error: {str(e)}")
-                logger.error("Streaming callback error", error=str(e))
+        def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            """Handle new token from LLM."""
+            if not token:
+                return
 
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
-        """Handle LLM response completion.
+            safe = self._filter.process(token)
+            if not safe:
+                return
 
-        Args:
-            response: LLM result
-            **kwargs: Additional arguments
-        """
-        logger.debug("LLM response completed", token_count=len(self.tokens))
+            self.tokens.append(safe)
+            if self.callback:
+                try:
+                    self.callback(safe)
+                except Exception as e:
+                    logger.error("Streaming callback error", error=str(e), exc_info=True)
 
-    def get_full_response(self) -> str:
-        """Get full accumulated response.
+        def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+            """Handle LLM response completion.
 
-        Returns:
-            Complete response string
-        """
-        return "".join(self.tokens)
+            Args:
+                response: LLM result
+                **kwargs: Additional arguments
+            """
+            logger.debug("LLM response completed", token_count=len(self.tokens))
+
+        def get_full_response(self) -> str:
+            """Get full accumulated response.
+
+            Returns:
+                Complete response string
+            """
+            return "".join(self.tokens)
 
 
 class OllamaLLM:
@@ -104,7 +122,7 @@ class OllamaLLM:
         self,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: float = 0.3,
         timeout: Optional[int] = None,
     ):
         """Initialize Ollama LLM.
@@ -112,7 +130,7 @@ class OllamaLLM:
         Args:
             model: Ollama model name (default: from settings)
             base_url: Ollama base URL (default: from settings)
-            temperature: Sampling temperature
+            temperature: Sampling temperature (0.3 optimized for Llama 3.2:3b factual responses)
             timeout: Request timeout in seconds
 
         Raises:
@@ -128,6 +146,9 @@ class OllamaLLM:
         self.temperature = temperature
         self.timeout = timeout or settings.OLLAMA_TIMEOUT
 
+        # Verify Ollama connection before initializing
+        self._verify_ollama_connection()
+
         try:
             logger.info(
                 "Initializing ChatOllama",
@@ -141,20 +162,138 @@ class OllamaLLM:
                 base_url=self.base_url,
                 temperature=self.temperature,
                 timeout=self.timeout,
-                num_ctx=4096,  # Context window
+                num_ctx=2048,  # Context window optimized for Llama 3.2:3b (2K tokens)
                 streaming=True,  # Enable token-by-token streaming
+                keep_alive=settings.OLLAMA_KEEP_ALIVE,  # Keep model loaded in memory
             )
 
             logger.info("ChatOllama initialized successfully")
         except Exception as e:
-            logger.error(
-                "Failed to initialize ChatOllama",
-                model=self.model_name,
-                base_url=self.base_url,
-                error=str(e),
-                exc_info=True,
+            error_msg = str(e)
+            # Provide helpful error messages for common issues
+            if "404" in error_msg or "not found" in error_msg.lower():
+                if "model" in error_msg.lower():
+                    raise ProcessingError(
+                        f"Ollama model '{self.model_name}' not found. "
+                        f"Please pull it with: ollama pull {self.model_name}\n"
+                        f"Ollama base URL: {self.base_url}"
+                    ) from e
+                else:
+                    raise ProcessingError(
+                        f"Ollama endpoint not found (404). "
+                        f"Please ensure Ollama is running at {self.base_url}\n"
+                        f"Start Ollama with: ollama serve"
+                    ) from e
+            elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                raise ProcessingError(
+                    f"Cannot connect to Ollama at {self.base_url}. "
+                    f"Please ensure Ollama is running.\n"
+                    f"Start Ollama with: ollama serve"
+                ) from e
+            else:
+                logger.error(
+                    "Failed to initialize ChatOllama",
+                    model=self.model_name,
+                    base_url=self.base_url,
+                    error=error_msg,
+                    exc_info=True,
+                    )
+                raise ProcessingError(
+                    f"Failed to initialize ChatOllama: {error_msg}\n"
+                    f"Model: {self.model_name}, Base URL: {self.base_url}"
+                ) from e
+
+    def _verify_ollama_connection(self) -> None:
+        """Verify Ollama is accessible and model exists.
+        
+        Raises:
+            ProcessingError: If Ollama is not accessible or model not found
+        """
+        try:
+            try:
+                import httpx
+            except ImportError:
+                logger.warning("httpx not available, skipping Ollama connection verification")
+                return
+            
+            # Check if Ollama is running
+            try:
+                response = httpx.get(
+                    f"{self.base_url}/api/tags",
+                    timeout=5
+                )
+                if response.status_code != 200:
+                    raise ProcessingError(
+                        f"Ollama returned status {response.status_code} at {self.base_url}. "
+                        f"Please ensure Ollama is running."
+                    )
+            except httpx.ConnectError:
+                raise ProcessingError(
+                    f"Cannot connect to Ollama at {self.base_url}. "
+                    f"Please ensure Ollama is running.\n"
+                    f"Start Ollama with: ollama serve\n"
+                    f"If running locally (not Docker), set OLLAMA_BASE_URL=http://localhost:11434"
+                )
+            except httpx.TimeoutException:
+                raise ProcessingError(
+                    f"Timeout connecting to Ollama at {self.base_url}. "
+                    f"Please ensure Ollama is running and accessible."
+                )
+            
+            # Check if model exists
+            models_data = response.json()
+            available_models = [m.get("name", "") for m in models_data.get("models", [])]
+            
+            # Check for exact match first
+            exact_match = self.model_name in available_models
+            
+            if exact_match:
+                # Use exact model name
+                actual_model = self.model_name
+                logger.info(
+                    "Ollama connection verified (exact match)",
+                    model=actual_model,
+                    base_url=self.base_url,
+                    available_models_count=len(available_models)
+                )
+            else:
+                # Look for models with same base name (e.g., qwen2.5 matches qwen2.5:7b or qwen2.5:3b)
+                model_base = self.model_name.split(":")[0]
+                matching_models = [m for m in available_models if m.startswith(model_base + ":") or m == model_base]
+                
+                if matching_models:
+                    # Use the first matching model (prefer the one we asked for if it exists, otherwise use first match)
+                    actual_model = matching_models[0]
+                    logger.warning(
+                        "Exact model not found, using similar model",
+                        required=self.model_name,
+                        using=actual_model,
+                        available_models=available_models
+                    )
+                    # Update to use the actual model name
+                    self.model_name = actual_model
+                    logger.info(
+                        "Ollama connection verified (using similar model)",
+                        model=self.model_name,
+                        base_url=self.base_url,
+                        available_models_count=len(available_models)
+                    )
+                else:
+                    available_str = ", ".join(available_models) if available_models else "None"
+                    raise ProcessingError(
+                        f"Ollama model '{self.model_name}' not found.\n"
+                        f"Available models: {available_str}\n"
+                        f"Please pull the model with: ollama pull {self.model_name}"
+                    )
+            
+        except ProcessingError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Failed to verify Ollama connection, proceeding anyway",
+                error=str(e)
             )
-            raise ProcessingError(f"Failed to initialize ChatOllama: {str(e)}") from e
+            # Don't fail initialization if verification fails, let the actual call fail
 
     def get_llm(self) -> ChatOllama:
         """Get the underlying LangChain ChatOllama instance.
@@ -329,7 +468,7 @@ class ConversationalRAGChain:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError, Exception)),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         reraise=True,
     )
     def _invoke_with_retry(
@@ -359,12 +498,39 @@ class ConversationalRAGChain:
             )
             raise
         except Exception as e:
+            error_msg = str(e)
+            error_str = error_msg.lower()
+            
+            # Check for 404 errors (model not found, endpoint not found)
+            if "404" in error_msg or "not found" in error_str:
+                if "model" in error_str:
+                    raise ProcessingError(
+                        f"Ollama model not found (404). "
+                        f"Please ensure the model '{self.model_name}' is available.\n"
+                        f"Pull it with: ollama pull {self.model_name}"
+                    ) from e
+                else:
+                    raise ProcessingError(
+                        f"Ollama endpoint not found (404). "
+                        f"Please ensure Ollama is running at {self.base_url}\n"
+                        f"Start Ollama with: ollama serve"
+                    ) from e
+            
+            # Check for connection errors
+            if "connection" in error_str or "refused" in error_str or "unreachable" in error_str:
+                raise ProcessingError(
+                    f"Cannot connect to Ollama at {self.base_url}. "
+                    f"Please ensure Ollama is running.\n"
+                    f"Start Ollama with: ollama serve\n"
+                    f"If running locally (not Docker), set OLLAMA_BASE_URL=http://localhost:11434"
+                ) from e
+            
             logger.error(
                 "Chain invocation failed with unexpected error",
-                error=str(e),
+                error=error_msg,
                 error_type=type(e).__name__,
             )
-            raise ProcessingError(f"Chain invocation failed: {str(e)}") from e
+            raise ProcessingError(f"Chain invocation failed: {error_msg}") from e
 
     async def stream(
         self, question: str, query_type: Optional[str] = None
@@ -396,4 +562,5 @@ class ConversationalRAGChain:
         except Exception as e:
             logger.error("Streaming failed", error=str(e))
             raise ProcessingError(f"Streaming failed: {str(e)}") from e
+
 

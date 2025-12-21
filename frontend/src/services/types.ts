@@ -19,18 +19,75 @@ export interface ChatMessage {
 }
 
 export interface Citation {
+  // Basic citation info
+  citation_number?: number;  // Inline citation number [1], [2], etc.
   file_id: string;
   file_name: string;
   chunk_id: string;
+  mime_type?: string;
+
+  // Location metadata
   page_number?: number;
+  page_numbers?: number[];  // Multiple pages from same file
+  page_display?: string;  // Formatted page display (e.g., "p.1, p.3")
+  chunk_index?: number;
+
+  // Audio/video metadata
+  start_time?: number;
+  end_time?: number;
   timestamp?: number;
-  confidence: number;
+
+  // Granular citation data
+  claim_text?: string;  // The claim from the response
+  exact_quote?: string;  // Exact quote from source
+  quote_confidence?: number;  // Confidence score 0.0-1.0
+
+  // Character-level positions for highlighting
+  char_start?: number;
+  char_end?: number;
+
+  // Sentence/paragraph level
+  sentence_index?: number;
+  paragraph_index?: number;
+
+  // Context snippets
+  context_before?: string;
+  context_after?: string;
+
+  // UI-formatted data
+  highlight?: {
+    start: number;
+    end: number;
+    text: string;
+  };
+
+  context?: {
+    before: string;
+    quote: string;
+    after: string;
+  };
+
+  location?: {
+    page?: number;
+    paragraph?: number;
+    sentence?: number;
+    timestamp?: string;
+  };
+
+  // Legacy fields
+  confidence?: number;
+  google_drive_url?: string;  // Clickable link to source file
+  content_preview?: string;  // Preview of the cited content
+
+  // Full metadata
+  metadata?: Record<string, any>;
 }
 
 export interface ChatRequest {
   query: string;
   folder_id?: string;
   conversation_id?: string;
+  debug?: boolean;
 }
 
 export interface ChatResponse {
@@ -113,8 +170,39 @@ export interface FolderStatusResponse {
   error?: string;
 }
 
+export interface FolderSummary {
+  folder_id: string;
+  folder_name: string | null;
+  summary: string | null;
+  learning_status: 'learning_pending' | 'learning_in_progress' | 'learning_complete' | 'learning_failed' | null;
+  insights: {
+    total_files: number;
+    unique_file_types: number;
+    top_themes: string[];
+    key_relationships: number;
+  } | null;
+  file_type_distribution: Record<string, number> | null;
+  entity_summary: {
+    top_entities: Array<{ entity: string; count: number }>;
+    top_themes: Array<{ theme: string; count: number }>;
+  } | null;
+  relationship_summary: Array<{
+    source_file: string;
+    target_file: string;
+    relationship_type: string;
+    confidence: number;
+  }> | null;
+  capabilities: string[] | null;
+  graph_statistics: {
+    node_count: number;
+    edge_count: number;
+    relationship_types: number;
+  } | null;
+  learning_completed_at: Date | string | null;
+}
+
 export interface ProcessingStatus {
-  type: 'processing_started' | 'files_detected' | 'file_processing' | 'file_processed' | 'file_error' | 'building_graph' | 'graph_complete' | 'processing_complete' | 'processing_error' | 'connected' | 'pong' | 'status' | 'error' | 'folder_structure' | 'folder_discovered' | 'folder_completed';
+  type: 'processing_started' | 'files_detected' | 'file_processing' | 'file_processed' | 'file_error' | 'building_graph' | 'graph_complete' | 'learning_started' | 'generating_summary' | 'summary_progress' | 'summary_complete' | 'summary_error' | 'processing_complete' | 'processing_error' | 'connected' | 'pong' | 'status' | 'error' | 'folder_structure' | 'folder_discovered' | 'folder_completed';
   message?: string;
   progress?: number; // 0.0 to 1.0
   file_name?: string;
@@ -132,6 +220,11 @@ export interface ProcessingStatus {
   folders?: any[];
   file_path?: string;
   parent_folder_id?: string;
+  summary_data?: {
+    total_files: number;
+    unique_file_types: number;
+    top_themes: string[];
+  };
   [key: string]: any;
 }
 

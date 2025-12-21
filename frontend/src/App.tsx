@@ -8,6 +8,7 @@ import GoogleAuth from './components/auth/GoogleAuth';
 import OAuthCallback from './components/auth/OAuthCallback';
 import FolderInput from './components/folder/FolderInput';
 import ChatInterface from './components/chat/ChatInterface';
+import KnowledgeGraphPage from './pages/KnowledgeGraphPage';
 import { systemService } from './services/api';
 
 /**
@@ -59,6 +60,18 @@ const App: React.FC = () => {
                   <MainLayout>
                     <ErrorBoundary>
                       <ChatInterface />
+                    </ErrorBoundary>
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/graph/:folderId"
+              element={
+                <ProtectedRoute>
+                  <MainLayout>
+                    <ErrorBoundary>
+                      <KnowledgeGraphPage />
                     </ErrorBoundary>
                   </MainLayout>
                 </ProtectedRoute>

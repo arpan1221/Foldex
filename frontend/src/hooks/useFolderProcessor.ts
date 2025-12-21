@@ -88,16 +88,10 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
           files_processed: message.files_processed,
           total_files: message.total_files,
           error: message.error,
+          summary_data: message.summary_data,
           // Pass through additional fields for folder structure
           ...message,
         };
-
-        setStatus(newStatus);
-
-        // Update files list if provided
-        if (message.files && Array.isArray(message.files)) {
-          setFiles(message.files);
-        }
 
         // Handle completion or error
         if (message.type === 'processing_complete') {
@@ -108,15 +102,24 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
             message: message.message || 'Processing completed successfully',
           });
 
-          // Set isProcessing to false to stop the infinite loop
-          setIsProcessing(false);
-
-          // Keep WebSocket connected to allow UI to show completion state
-          // It will be disconnected when navigating away or on component unmount
+          // Don't set isProcessing to false yet - keep it true to allow learning messages
+          // The learning phase (summarization) happens after processing_complete
+          // Only set to false when learning is complete or fails
 
           console.log('Processing completed', {
             files_processed: message.files_processed,
             total_files: message.total_files,
+          });
+        } else if (message.type === 'summary_complete' || message.type === 'summary_error') {
+          // Learning/summarization phase is complete
+          setIsProcessing(false);
+          
+          // Update status with final learning status
+          setStatus(newStatus);
+          
+          console.log('Folder learning completed', {
+            type: message.type,
+            summary_data: message.summary_data,
           });
         } else if (message.type === 'processing_error') {
           setIsProcessing(false);
@@ -136,6 +139,15 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
               progress,
             });
           }
+        } else {
+          // For all other messages (including learning messages), update status
+          // This ensures learning_started, summary_progress, etc. are displayed
+          setStatus(newStatus);
+        }
+
+        // Update files list if provided
+        if (message.files && Array.isArray(message.files)) {
+          setFiles(message.files);
         }
       };
 

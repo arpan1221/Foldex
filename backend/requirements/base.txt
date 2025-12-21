@@ -23,12 +23,14 @@ torch>=2.2.0,<3.0.0  # Compatible with sentence-transformers
 transformers==4.35.0
 openai-whisper==20231117
 networkx==3.2.1
+spacy==3.7.2
 
 # LangChain - Upgraded for better Ollama streaming support
 langchain==0.1.20  # Upgraded from 0.1.0 for streaming support
 langchain-community==0.0.38  # Upgraded from 0.0.10 for Ollama streaming
 langchain-core==0.1.52  # Upgraded for compatibility
 langgraph==0.0.20  # For workflow orchestration
+langsmith==0.1.129  # For observability and monitoring
 tenacity==8.2.3  # For retry mechanisms
 rank-bm25==0.2.2  # For BM25 retriever in hybrid search
 
@@ -37,6 +39,7 @@ PyPDF2==3.0.1
 pdfplumber==0.10.3
 PyMuPDF==1.23.8  # For PDF text extraction
 python-docx==1.1.0
+unstructured[all-docs]>=0.10.0  # For HTML, DOCX, and other document types
 
 # Utilities
 python-multipart==0.0.6

@@ -66,91 +66,77 @@ const InputArea: React.FC<InputAreaProps> = ({
       <div className="max-w-3xl mx-auto">
         <form onSubmit={handleSubmit} className="space-y-3">
           {/* Input Container */}
-          <div className="flex gap-3 items-end">
-            {/* Attachment Button (Future) */}
-            <button
-              type="button"
+          <div 
+            className="flex-1 relative rounded-2xl bg-gray-800 border-2 border-gray-700 focus-within:border-gray-500 transition-colors"
+            style={{ outline: 'none' }}
+            onFocus={(e) => e.currentTarget.style.outline = 'none'}
+            onBlur={(e) => e.currentTarget.style.outline = 'none'}
+          >
+            <textarea
+              ref={textareaRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => setIsComposing(false)}
+              placeholder="Ask anything about your folder..."
               disabled={isLoading || disabled}
-              className="flex-shrink-0 w-10 h-10 rounded-lg bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Attach file (coming soon)"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                />
-              </svg>
-            </button>
+              rows={1}
+              className={`
+                w-full
+                px-4 pr-14
+                bg-transparent
+                border-0
+                rounded-2xl
+                text-gray-100
+                placeholder:text-gray-500
+                resize-none
+                focus:outline-none
+                focus:ring-0
+                focus:border-0
+                transition-all
+                disabled:opacity-50 disabled:cursor-not-allowed
+                max-h-[200px] overflow-y-auto
+              `}
+              style={{
+                minHeight: '48px',
+                paddingTop: '12px',
+                paddingBottom: '12px',
+                lineHeight: '24px',
+                outline: 'none',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.outline = 'none';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            />
 
-            {/* Text Input */}
-            <div className="flex-1 relative">
-              <textarea
-                ref={textareaRef}
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                onCompositionStart={() => setIsComposing(true)}
-                onCompositionEnd={() => setIsComposing(false)}
-                placeholder="Ask anything about your folder..."
-                disabled={isLoading || disabled}
-                rows={1}
-                className={`
-                  w-full
-                  px-4 py-3
-                  bg-gray-800
-                  border-2 border-gray-700
-                  rounded-lg
-                  text-gray-100
-                  placeholder:text-gray-500
-                  resize-none
-                  focus:outline-none focus:ring-2 focus:ring-gray-600 focus:border-transparent
-                  transition-all
-                  disabled:opacity-50 disabled:cursor-not-allowed
-                  max-h-[200px] overflow-y-auto
-                `}
-                style={{
-                  minHeight: '48px',
-                }}
-              />
-
-              {/* Character count (optional, for very long messages) */}
-              {inputValue.length > 500 && (
-                <div className="absolute bottom-2 right-2 text-xs text-gray-500">
-                  {inputValue.length}/2000
-                </div>
-              )}
-            </div>
-
-            {/* Send Button */}
+            {/* Send Button - Inside input, vertically centered */}
             <button
               type="submit"
               disabled={!inputValue.trim() || isLoading || disabled}
               className={`
-                flex-shrink-0
-                h-12 w-12
-                rounded-lg
+                absolute
+                right-2
+                top-1/2
+                -translate-y-1/2
+                h-8 w-8
+                rounded-xl
                 bg-gray-700 hover:bg-gray-600
                 text-white
                 flex items-center justify-center
                 transition-all duration-200
                 disabled:opacity-50 disabled:cursor-not-allowed
                 disabled:hover:bg-gray-700
-                shadow-lg hover:shadow-xl
-                focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-gray-900
+                shadow-md hover:shadow-lg
+                focus:outline-none
               `}
               title="Send message (Enter)"
             >
               {isLoading ? (
                 <svg
-                  className="animate-spin h-5 w-5"
+                  className="animate-spin h-4 w-4"
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -171,7 +157,7 @@ const InputArea: React.FC<InputAreaProps> = ({
                 </svg>
               ) : (
                 <svg
-                  className="w-5 h-5"
+                  className="w-4 h-4"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -185,6 +171,13 @@ const InputArea: React.FC<InputAreaProps> = ({
                 </svg>
               )}
             </button>
+
+            {/* Character count (optional, for very long messages) */}
+            {inputValue.length > 500 && (
+              <div className="absolute bottom-12 right-2 text-xs text-gray-500">
+                {inputValue.length}/2000
+              </div>
+            )}
           </div>
 
           {/* Helper Text */}

@@ -22,13 +22,18 @@ const Sidebar: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<APIException | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('sidebarWidth');
+    return saved ? parseInt(saved, 10) : 384; // Default 384px (w-96)
+  });
+  const [isResizing, setIsResizing] = useState(false);
   const [folderTrees, setFolderTrees] = useState<Record<string, TreeNode>>({});
   const [folderConversations, setFolderConversations] = useState<Record<string, Conversation[]>>({});
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [loadingTrees, setLoadingTrees] = useState<Set<string>>(new Set());
   const [loadingConversations, setLoadingConversations] = useState<Set<string>>(new Set());
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [creatingConversationId, setCreatingConversationId] = useState<string | null>(null);
 
   // Load folders on mount and when location changes (folder processed)
@@ -37,6 +42,40 @@ const Sidebar: React.FC = () => {
       loadFolders();
     }
   }, [isAuthenticated, location.pathname]);
+
+  // Save sidebar width to localStorage
+  useEffect(() => {
+    localStorage.setItem('sidebarWidth', sidebarWidth.toString());
+  }, [sidebarWidth]);
+
+  // Handle resizing
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX;
+      const minWidth = 240; // Minimum sidebar width
+      const maxWidth = 600; // Maximum sidebar width
+      setSidebarWidth(Math.max(minWidth, Math.min(maxWidth, newWidth)));
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
 
   const loadFolders = async () => {
     setIsLoading(true);
@@ -223,21 +262,53 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  const handleDeleteConversation = async (folderId: string, conversationId: string, conversationTitle: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (!window.confirm(`Are you sure you want to delete "${conversationTitle}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    setDeletingConversationId(conversationId);
+    try {
+      await chatService.deleteConversation(conversationId);
+      
+      // Remove from local state
+      setFolderConversations(prev => {
+        const conversations = prev[folderId] || [];
+        return {
+          ...prev,
+          [folderId]: conversations.filter(c => c.conversation_id !== conversationId)
+        };
+      });
+      
+      // If we're currently viewing this conversation, navigate to folder
+      if (currentConversationId === conversationId && currentFolderId === folderId) {
+        navigate(`/chat/${folderId}`);
+      }
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+      alert('Failed to delete conversation. Please try again.');
+    } finally {
+      setDeletingConversationId(null);
+    }
+  };
+
   if (!isAuthenticated) {
     return null;
   }
 
   return (
-    <aside
-      className={`
-        bg-gray-900 border-r border-gray-800 flex flex-col
-        transition-all duration-300
-        ${isCollapsed ? 'w-16' : 'w-80'}
-      `}
-    >
-      {/* Sidebar Header */}
-      <div className="p-4 border-b border-gray-800 flex items-center justify-between">
-        {!isCollapsed && (
+    <>
+      <aside
+        className="bg-gray-900 border-r border-gray-800 flex flex-col relative"
+        style={{ 
+          width: `${sidebarWidth}px`,
+          transition: isResizing ? 'none' : 'width 0.2s ease'
+        }}
+      >
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <svg
               className="w-5 h-5 text-gray-300"
@@ -252,33 +323,12 @@ const Sidebar: React.FC = () => {
                 d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"
               />
             </svg>
-            <h2 className="text-lg font-semibold text-gray-100">Folders</h2>
+            <h2 className="text-xl font-semibold text-gray-100">Folders</h2>
           </div>
-        )}
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-          title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <svg
-            className={`w-5 h-5 transition-transform ${isCollapsed ? 'rotate-180' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M11 19l-7-7 7-7m8 14l-7-7 7-7"
-            />
-          </svg>
-        </button>
-      </div>
+        </div>
 
-      {/* Search (when not collapsed) */}
-      {!isCollapsed && (
-        <div className="p-4 border-b border-gray-800">
+      {/* Search */}
+      <div className="p-4 border-b border-gray-800">
           <div className="relative">
             <svg
               className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500"
@@ -298,18 +348,16 @@ const Sidebar: React.FC = () => {
               placeholder="Search folders..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:border-transparent"
+              className="w-full pl-10 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-base text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:border-transparent"
             />
           </div>
         </div>
-      )}
 
       {/* New Folder Button */}
-      {!isCollapsed && (
-        <div className="p-4 border-b border-gray-800">
+      <div className="p-4 border-b border-gray-800">
           <button
             onClick={handleNewFolder}
-            className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2"
+            className="w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-base text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2"
           >
             <svg
               className="w-5 h-5"
@@ -327,11 +375,10 @@ const Sidebar: React.FC = () => {
             <span>New Folder</span>
           </button>
         </div>
-      )}
 
       {/* Folders List */}
       <div className="flex-1 overflow-y-auto">
-        {error && !isCollapsed && (
+        {error && (
           <div className="p-4">
             <ErrorDisplay
               error={error}
@@ -360,17 +407,17 @@ const Sidebar: React.FC = () => {
                 d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"
               />
             </svg>
-            <p className="text-gray-400 text-sm mb-2">No folders yet</p>
+            <p className="text-gray-400 text-base mb-2">No folders yet</p>
             <button
               onClick={handleNewFolder}
-              className="text-gray-300 hover:text-gray-200 text-sm font-medium"
+              className="text-gray-300 hover:text-gray-200 text-base font-medium"
             >
               Add your first folder
             </button>
           </div>
         ) : (
           <div className="p-2">
-            <div className="text-xs font-medium text-gray-500 px-2 py-1 mb-1">
+            <div className="text-sm font-medium text-gray-500 px-2 py-1 mb-1">
               {filteredFolders.length} {filteredFolders.length === 1 ? 'folder' : 'folders'}
             </div>
             {filteredFolders.map((folder) => {
@@ -416,7 +463,7 @@ const Sidebar: React.FC = () => {
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                       </svg>
-                      <span className="text-sm font-medium truncate">{folder.folder_name}</span>
+                      <span className="text-base font-medium truncate">{folder.folder_name}</span>
                     </button>
                     <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
@@ -450,43 +497,75 @@ const Sidebar: React.FC = () => {
                       {/* Conversations Section */}
                       <div className="py-1">
                         <div className="flex items-center justify-between px-2 mb-1">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Chats</span>
+                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Chats</span>
                           {isLoadingConvs && <div className="w-3 h-3 border border-gray-500 border-t-transparent rounded-full animate-spin"></div>}
                         </div>
                         
                         {conversations.length > 0 ? (
                           <div className="space-y-0.5">
                             {conversations.map((conv) => (
-                              <button
+                              <div
                                 key={conv.conversation_id}
-                                onClick={(e) => handleConversationClick(folder.folder_id, conv.conversation_id, e)}
-                                className={`
-                                  w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left group/chat
-                                  transition-all duration-200
-                                  ${currentConversationId === conv.conversation_id
-                                    ? 'bg-blue-600/20 text-blue-300 ring-1 ring-blue-500/30'
+                                className="group/chat-item flex items-center gap-1"
+                              >
+                                {/* Active indicator dot */}
+                                {currentConversationId === conv.conversation_id && (
+                                  <div className="w-1.5 h-1.5 bg-blue-400 rounded-full flex-shrink-0 ml-1"></div>
+                                )}
+                                {currentConversationId !== conv.conversation_id && (
+                                  <div className="w-1.5 h-1.5 flex-shrink-0 ml-1"></div>
+                                )}
+                                
+                                <button
+                                  onClick={(e) => handleConversationClick(folder.folder_id, conv.conversation_id, e)}
+                                  className={`
+                                    flex-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-left group/chat
+                                    transition-all duration-200
+                                    ${currentConversationId === conv.conversation_id
+                                      ? 'text-blue-300'
                                     : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'}
                                 `}
                               >
                                 <svg className={`w-3.5 h-3.5 flex-shrink-0 ${currentConversationId === conv.conversation_id ? 'text-blue-400' : 'text-gray-500 group-hover/chat:text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                                 </svg>
-                                <span className="text-xs font-medium truncate flex-1">{conv.title}</span>
-                                {currentConversationId === conv.conversation_id && (
-                                  <div className="w-1 h-1 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.8)]"></div>
-                                )}
+                                <span className="text-sm font-medium truncate flex-1">{conv.title}</span>
                               </button>
+                                <button
+                                  onClick={(e) => handleDeleteConversation(folder.folder_id, conv.conversation_id, conv.title, e)}
+                                  disabled={deletingConversationId === conv.conversation_id}
+                                  className={`
+                                    px-1.5 py-1.5 rounded-md opacity-0 group-hover/chat-item:opacity-100
+                                    transition-all duration-200
+                                    ${deletingConversationId === conv.conversation_id
+                                      ? 'opacity-100 cursor-wait'
+                                      : 'hover:bg-red-600/20 hover:text-red-400'}
+                                    text-gray-500 hover:text-red-400
+                                  `}
+                                  title="Delete conversation"
+                                >
+                                  {deletingConversationId === conv.conversation_id ? (
+                                    <svg className="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  )}
+                                </button>
+                              </div>
                             ))}
                           </div>
                         ) : !isLoadingConvs && (
-                          <div className="px-2 py-1 text-[10px] text-gray-600 italic">No chats yet</div>
+                          <div className="px-2 py-1 text-xs text-gray-600 italic">No chats yet</div>
                         )}
                       </div>
 
                       {/* Files Section (Optional Toggle) */}
                       <div className="pt-2">
                         <div className="px-2 mb-1">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Files</span>
+                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Files</span>
                         </div>
                         {isLoadingTree ? (
                           <div className="py-2 flex justify-center"><div className="w-4 h-4 border-2 border-gray-700 border-t-transparent rounded-full animate-spin"></div></div>
@@ -503,7 +582,7 @@ const Sidebar: React.FC = () => {
                             />
                           ))
                         ) : (
-                          <div className="px-2 py-1 text-[10px] text-gray-600 italic">Empty</div>
+                          <div className="px-2 py-1 text-xs text-gray-600 italic">Empty</div>
                         )}
                       </div>
                     </div>
@@ -515,31 +594,21 @@ const Sidebar: React.FC = () => {
         )}
       </div>
 
-      {/* Collapsed View Icons */}
-      {isCollapsed && (
-        <div className="p-2 space-y-2 border-t border-gray-800">
-          <button
-            onClick={handleNewFolder}
-            className="w-full p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-            title="New Folder"
-          >
-            <svg
-              className="w-5 h-5 mx-auto"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
-              />
-            </svg>
-          </button>
-        </div>
-      )}
-    </aside>
+        {/* Resize Handle - wider invisible area with visible border on hover */}
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizing(true);
+          }}
+          className={`
+            absolute top-0 right-0 w-1 h-full cursor-col-resize z-10
+            hover:bg-gray-600 transition-colors
+            ${isResizing ? 'bg-gray-600' : 'bg-transparent'}
+          `}
+          title="Drag to resize sidebar"
+        />
+      </aside>
+    </>
   );
 };
 

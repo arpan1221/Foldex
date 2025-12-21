@@ -1,20 +1,16 @@
-"""PDF document processor using PyMuPDF (fitz) for text extraction."""
+"""PDF document processor using intelligent hierarchical chunking."""
 
 from typing import List, Optional, Callable
 import os
 import uuid
 import structlog
 
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    fitz = None
-
 from app.processors.base import BaseProcessor
 from app.models.documents import DocumentChunk
 from app.core.exceptions import DocumentProcessingError
 from app.config.settings import settings
-from app.utils.text_utils import chunk_text, clean_text
+from app.ingestion.chunking import get_foldex_chunker
+from app.ingestion.metadata_schema import MetadataBuilder, FileType, ChunkType
 
 logger = structlog.get_logger(__name__)
 
@@ -29,10 +25,12 @@ class PDFProcessor(BaseProcessor):
     def __init__(self):
         """Initialize PDF processor."""
         super().__init__()
-        if fitz is None:
-            logger.warning("PyMuPDF not available, PDF processing will fail")
-        self.chunk_size = settings.CHUNK_SIZE
-        self.chunk_overlap = settings.CHUNK_OVERLAP
+        # Use intelligent chunking system
+        self.chunker = get_foldex_chunker(
+            chunk_size=600,  # ~150 tokens for qwen3:4b
+            chunk_overlap=100,
+            context_window_size=200,
+        )
 
     async def can_process(self, file_path: str, mime_type: Optional[str] = None) -> bool:
         """Check if file is a PDF.
@@ -69,11 +67,6 @@ class PDFProcessor(BaseProcessor):
         Raises:
             DocumentProcessingError: If processing fails
         """
-        if fitz is None:
-            raise DocumentProcessingError(
-                file_path, "PyMuPDF library not installed"
-            )
-
         if not os.path.exists(file_path):
             raise DocumentProcessingError(file_path, "File not found")
 
@@ -84,91 +77,102 @@ class PDFProcessor(BaseProcessor):
             if not file_id:
                 file_id = str(uuid.uuid4())
 
-            # Open PDF document
-            doc = fitz.open(file_path)
-            total_pages = len(doc)
-            
-            if total_pages == 0:
-                raise DocumentProcessingError(file_path, "PDF has no pages")
-
             self._update_progress(progress_callback, 0.1)
 
+            # Prepare file metadata for chunker
+            file_metadata = {
+                "file_id": file_id,
+                "file_name": metadata.get("file_name", "") if metadata else "",
+                "mime_type": "application/pdf",
+            }
+
+            # Add any additional metadata
+            if metadata:
+                file_metadata.update({
+                    k: v for k, v in metadata.items()
+                    if k not in ["file_name", "mime_type"]
+                })
+
+            self._update_progress(progress_callback, 0.3)
+
+            # Use intelligent chunking system
+            langchain_docs = self.chunker.chunk_pdf(file_path, file_metadata)
+
+            self._update_progress(progress_callback, 0.7)
+
+            # Convert LangChain Documents to DocumentChunk objects with standardized metadata
             chunks: List[DocumentChunk] = []
-            chunk_index = 0
-
-            # Extract text from each page
-            for page_num in range(total_pages):
-                try:
-                    page = doc[page_num]
-                    
-                    # Extract text from page
-                    text = page.get_text()
-                    
-                    if not text or not text.strip():
-                        # Skip empty pages
-                        continue
-
-                    # Clean text
-                    text = clean_text(text)
-
-                    # Chunk text by sentences/paragraphs, respecting page boundaries
-                    page_chunks = self._chunk_page_text(text, page_num + 1)
-
-                    # Create chunks with page metadata
-                    for chunk_text in page_chunks:
-                        if not chunk_text.strip():
-                            continue
-
-                        chunk_id = self._generate_chunk_id(file_id, chunk_index)
-                        chunk_metadata = {
-                            "page_number": page_num + 1,
-                            "total_pages": total_pages,
-                            "chunk_index": chunk_index,
-                            "file_name": metadata.get("file_name", "") if metadata else "",
-                            "mime_type": "application/pdf",
-                        }
-
-                        # Add any additional metadata
-                        if metadata:
-                            chunk_metadata.update({
-                                k: v for k, v in metadata.items()
-                                if k not in ["file_name", "mime_type"]
-                            })
-
-                        chunks.append(
-                            DocumentChunk(
-                                chunk_id=chunk_id,
-                                content=chunk_text,
-                                file_id=file_id,
-                                metadata=chunk_metadata,
-                            )
-                        )
-                        chunk_index += 1
-
-                    # Update progress
-                    progress = 0.1 + (page_num + 1) / total_pages * 0.9
-                    self._update_progress(progress_callback, progress)
-
-                except Exception as e:
-                    self.logger.warning(
-                        "Failed to process PDF page",
-                        page_num=page_num + 1,
-                        error=str(e),
-                    )
-                    # Continue with next page
-                    continue
-
-            doc.close()
-
-            if not chunks:
-                raise DocumentProcessingError(
-                    file_path, "No text content extracted from PDF"
+            total_pages = max(
+                (doc.metadata.get("page_number", 0) for doc in langchain_docs),
+                default=0
+            )
+            
+            for doc in langchain_docs:
+                doc_meta = doc.metadata
+                
+                # Extract values from existing metadata
+                chunk_id = doc_meta.get("chunk_id", str(uuid.uuid4()))
+                file_name = doc_meta.get("file_name", "")
+                drive_url = doc_meta.get("drive_url", doc_meta.get("web_view_link", ""))
+                page_number = doc_meta.get("page_number", 0)
+                section = doc_meta.get("section", "")
+                authors = doc_meta.get("authors", [])
+                document_title = doc_meta.get("document_title", "")
+                
+                # Convert authors list if it's a string
+                if isinstance(authors, str):
+                    authors = [a.strip() for a in authors.split(",") if a.strip()]
+                elif not isinstance(authors, list):
+                    authors = []
+                
+                # Build base metadata
+                base_meta = MetadataBuilder.base_metadata(
+                    file_id=file_id,
+                    file_name=file_name,
+                    file_type=FileType.PDF,
+                    chunk_type=ChunkType.DOCUMENT_SECTION,
+                    chunk_id=chunk_id,
+                    drive_url=drive_url,
                 )
+                
+                # Add PDF-specific metadata
+                if page_number > 0:
+                    pdf_meta = MetadataBuilder.pdf_metadata(
+                        base=base_meta,
+                        page_number=page_number,
+                        total_pages=total_pages,
+                        section=section,
+                        authors=authors,
+                        title=document_title,
+                    )
+                else:
+                    pdf_meta = base_meta
+                
+                # Merge with any additional metadata from chunker
+                additional_meta = {
+                    k: v for k, v in doc_meta.items()
+                    if k not in [
+                        "chunk_id", "file_id", "file_name", "drive_url", "web_view_link",
+                        "page_number", "section", "authors", "document_title",
+                        "file_type", "chunk_type", "ingestion_date", "schema_version"
+                    ]
+                }
+                
+                final_metadata = MetadataBuilder.merge_metadata(pdf_meta, additional_meta)
+                
+                chunk = DocumentChunk(
+                    chunk_id=chunk_id,
+                    content=doc.page_content,
+                    file_id=file_id,
+                    metadata=final_metadata,
+                )
+                chunks.append(chunk)
+
+            self._update_progress(progress_callback, 1.0)
 
             self.logger.info(
                 "PDF processing completed",
                 file_path=file_path,
-                pages=total_pages,
                 chunks=len(chunks),
             )
 
@@ -184,46 +188,6 @@ class PDFProcessor(BaseProcessor):
                 exc_info=True,
             )
             raise DocumentProcessingError(file_path, f"PDF processing failed: {str(e)}") from e
-
-    def _chunk_page_text(self, text: str, page_number: int) -> List[str]:
-        """Chunk text from a single page.
-
-        Args:
-            text: Text content from page
-            page_number: Page number for metadata
-
-        Returns:
-            List of text chunks
-        """
-        # Use smart chunking that respects sentence boundaries
-        # Split by paragraphs first
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-
-        chunks = []
-        current_chunk = ""
-
-        for paragraph in paragraphs:
-            # If adding this paragraph would exceed chunk size, save current chunk
-            if current_chunk and len(current_chunk) + len(paragraph) + 2 > self.chunk_size:
-                chunks.append(current_chunk.strip())
-                # Start new chunk with overlap
-                overlap_text = current_chunk[-self.chunk_overlap:] if len(current_chunk) > self.chunk_overlap else ""
-                current_chunk = overlap_text + "\n\n" + paragraph
-            else:
-                if current_chunk:
-                    current_chunk += "\n\n" + paragraph
-                else:
-                    current_chunk = paragraph
-
-        # Add remaining chunk
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-
-        # If no chunks created (very short text), create one chunk
-        if not chunks and text.strip():
-            chunks = chunk_text(text, self.chunk_size, self.chunk_overlap)
-
-        return chunks
 
     def get_supported_extensions(self) -> List[str]:
         """Get supported file extensions.

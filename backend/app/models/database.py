@@ -126,6 +126,17 @@ class FolderRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Folder knowledge base / summarization fields
+    summary = Column(Text, nullable=True)  # Master folder summary
+    learning_status = Column(String, nullable=True)  # learning_pending, learning_in_progress, learning_complete, learning_failed
+    insights = Column(JSON, nullable=True)  # Structured insights (themes, entities, capabilities)
+    file_type_distribution = Column(JSON, nullable=True)  # File type counts {"pdf": 5, "audio": 2}
+    entity_summary = Column(JSON, nullable=True)  # Top entities across all files
+    relationship_summary = Column(JSON, nullable=True)  # Key cross-file relationships
+    capabilities = Column(JSON, nullable=True)  # What questions can be answered from this folder
+    graph_statistics = Column(JSON, nullable=True)  # Knowledge graph metrics (node count, edge count, etc.)
+    learning_completed_at = Column(DateTime, nullable=True)  # When summarization finished
+
 
 class KnowledgeGraphRecord(Base):
     """SQLAlchemy model for knowledge graphs."""
@@ -135,6 +146,22 @@ class KnowledgeGraphRecord(Base):
     folder_id = Column(String, primary_key=True, index=True)
     graph_data = Column(BLOB, nullable=False)  # Pickled NetworkX graph
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProcessingCacheRecord(Base):
+    """SQLAlchemy model for processing cache."""
+
+    __tablename__ = "processing_cache"
+
+    file_id = Column(String, primary_key=True, index=True)
+    file_hash = Column(String, nullable=False, index=True)  # MD5 hash for change detection
+    folder_id = Column(String, nullable=True, index=True)
+    file_name = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)  # FileTypeCategory value
+    chunk_count = Column(Integer, default=0)
+    processing_time_seconds = Column(Integer, default=0)  # Stored as integer (milliseconds)
+    cached_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=True, index=True)  # Optional expiration
 
 
 # ============================================================================
@@ -192,6 +219,25 @@ class MessageModel(BaseModel):
     content: str = Field(..., description="Message content")
     citations: Optional[Dict[str, Any]] = Field(None, description="Source citations")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        from_attributes = True
+
+
+class FolderSummaryModel(BaseModel):
+    """Pydantic model for folder summary/knowledge base."""
+
+    folder_id: str = Field(..., description="Folder identifier")
+    folder_name: Optional[str] = Field(None, description="Folder name")
+    summary: Optional[str] = Field(None, description="Master folder summary")
+    learning_status: Optional[str] = Field(None, description="Learning status")
+    insights: Optional[Dict[str, Any]] = Field(None, description="Structured insights")
+    file_type_distribution: Optional[Dict[str, int]] = Field(None, description="File type counts")
+    entity_summary: Optional[Dict[str, Any]] = Field(None, description="Top entities")
+    relationship_summary: Optional[Dict[str, Any]] = Field(None, description="Key relationships")
+    capabilities: Optional[list] = Field(None, description="Folder capabilities")
+    graph_statistics: Optional[Dict[str, Any]] = Field(None, description="Graph metrics")
+    learning_completed_at: Optional[datetime] = Field(None, description="Completion timestamp")
 
     class Config:
         from_attributes = True

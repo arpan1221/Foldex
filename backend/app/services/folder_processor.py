@@ -409,33 +409,8 @@ class FolderProcessor:
             
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Build knowledge graph if files were processed
-            if processed_count > 0:
-                try:
-                    await manager.send_message(
-                        folder_id,
-                        {
-                            "type": "building_graph",
-                            "folder_id": folder_id,
-                            "message": "Building knowledge graph...",
-                        },
-                    )
-
-                    await self.kg_service.build_graph(folder_id)
-
-                    await manager.send_message(
-                        folder_id,
-                        {
-                            "type": "graph_complete",
-                            "folder_id": folder_id,
-                            "message": "Knowledge graph built successfully",
-                        },
-                    )
-                except Exception as e:
-                    logger.error("Knowledge graph build failed", folder_id=folder_id, error=str(e))
-                    # Don't fail entire processing if graph build fails
-
-            # Send completion notification
+            # Send completion notification IMMEDIATELY after chunking
+            # This allows users to start chatting right away
             status_message = f"Processing completed: {processed_count}/{total_files} files processed"
             if failed_files:
                 status_message += f", {len(failed_files)} failed"
@@ -452,7 +427,6 @@ class FolderProcessor:
             }
             
             # Send completion message multiple times to ensure delivery
-            # (in case of temporary network issues)
             for attempt in range(3):
                 try:
                     await manager.send_message(folder_id, completion_message)
@@ -460,18 +434,23 @@ class FolderProcessor:
                         "Completion message sent",
                         folder_id=folder_id,
                         attempt=attempt + 1,
-                        connections=manager.get_connection_count(folder_id),
                     )
-                    if attempt == 0:
-                        # Wait a bit before retry to ensure first message is processed
-                        await asyncio.sleep(0.5)
+                    break
                 except Exception as e:
-                    logger.warning(
-                        "Failed to send completion message",
-                        folder_id=folder_id,
-                        attempt=attempt + 1,
-                        error=str(e),
-                    )
+                    if attempt == 2:
+                        logger.warning(
+                            "Failed to send completion message after 3 attempts",
+                            folder_id=folder_id,
+                            error=str(e),
+                        )
+                    await asyncio.sleep(0.1)
+
+            # Start background learning task (knowledge graph + summarization)
+            # This runs asynchronously and doesn't block the pipeline
+            if processed_count > 0:
+                asyncio.create_task(
+                    self._background_learning_task(folder_id, user_id)
+                )
 
             # Update status in database
             await self._update_processing_status(
@@ -826,6 +805,75 @@ class FolderProcessor:
                 flattened.extend(self._flatten_subfolders(nested_subfolders, current_path))
         
         return flattened
+
+    async def _background_learning_task(self, folder_id: str, user_id: str) -> None:
+        """Background task for knowledge graph building and folder summarization.
+        
+        This runs asynchronously after chunking completes, allowing users to
+        start chatting immediately while learning happens in the background.
+        
+        Args:
+            folder_id: Folder ID
+            user_id: User ID
+        """
+        try:
+            # Optional: Build knowledge graph (can be disabled for speed)
+            # Skip for now to prioritize speed - can be enabled later if needed
+            # if self.kg_service:
+            #     try:
+            #         await manager.send_message(
+            #             folder_id,
+            #             {
+            #                 "type": "building_graph",
+            #                 "folder_id": folder_id,
+            #                 "message": "Building knowledge graph...",
+            #             },
+            #         )
+            #         await self.kg_service.build_graph(folder_id)
+            #         await manager.send_message(
+            #             folder_id,
+            #             {
+            #                 "type": "graph_complete",
+            #                 "folder_id": folder_id,
+            #                 "message": "Knowledge graph built successfully",
+            #             },
+            #         )
+            #     except Exception as e:
+            #         logger.error("Knowledge graph build failed", folder_id=folder_id, error=str(e))
+
+            # Generate folder summary (POST-INGESTION SUMMARIZATION)
+            try:
+                from app.services.folder_summarizer import get_folder_summarizer
+
+                logger.info("Starting background folder summarization", folder_id=folder_id)
+
+                summarizer = get_folder_summarizer()
+                summary_data = await summarizer.generate_folder_summary(
+                    folder_id=folder_id,
+                    send_progress=True  # WebSocket updates enabled
+                )
+
+                logger.info(
+                    "Background folder summarization completed",
+                    folder_id=folder_id,
+                    capabilities_count=len(summary_data.get("capabilities", [])),
+                )
+
+            except Exception as e:
+                logger.error(
+                    "Background folder summarization failed",
+                    folder_id=folder_id,
+                    error=str(e),
+                    exc_info=True,
+                )
+
+        except Exception as e:
+            logger.error(
+                "Background learning task failed",
+                folder_id=folder_id,
+                error=str(e),
+                exc_info=True,
+            )
 
     def cancel_processing(self, folder_id: str, user_id: str) -> bool:
         """Cancel ongoing processing for a folder.

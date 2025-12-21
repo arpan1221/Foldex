@@ -91,6 +91,6 @@ class TestDocumentProcessor:
         chunks = await processor.process_file(str(sample_text_path), file_info)
         
         assert all(chunk.file_id == "test_file_123" for chunk in chunks)
-        assert all(chunk.file_name == "test.txt" for chunk in chunks)
+        assert all(chunk.metadata.get("file_name") == "test.txt" for chunk in chunks)
         assert all("file_id" in chunk.metadata for chunk in chunks)
 

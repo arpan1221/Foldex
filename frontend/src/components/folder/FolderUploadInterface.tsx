@@ -41,6 +41,7 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
   // Track backend-provided counts for accurate progress
   const [backendTotalFiles, setBackendTotalFiles] = useState<number>(0);
   const [backendProcessedFiles, setBackendProcessedFiles] = useState<number>(0);
+  const [backendFailedFiles, setBackendFailedFiles] = useState<number>(0);
 
   // Update files and folders based on WebSocket messages
   useEffect(() => {
@@ -55,6 +56,9 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
       }
       if (status.files_processed !== undefined) {
         setBackendProcessedFiles(status.files_processed);
+      }
+      if (status.failed_files !== undefined) {
+        setBackendFailedFiles(status.failed_files);
       }
 
       // Handle file processing updates
@@ -370,7 +374,7 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
           <div className={`w-2 h-2 rounded-full ${isComplete ? 'bg-green-400' : 'bg-blue-400 animate-pulse'}`} />
           <div>
             <h3 className="text-sm font-semibold text-gray-100">
-              {isComplete ? 'Upload Complete' : 'Uploading to Foldex'}
+              {isComplete ? 'Upload Complete' : 'Foldex is indexing your files'}
             </h3>
             <p className="text-xs text-gray-400">
               {completedFiles} of {totalFiles} files • {errorFiles > 0 ? `${errorFiles} failed` : 'No errors'}
@@ -465,12 +469,23 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
       {isComplete && isExpanded && (
         <div className="p-3 border-t border-gray-700 bg-gray-800">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-green-400">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span className="text-sm font-medium">All files processed</span>
-            </div>
+            {errorFiles > 0 || backendFailedFiles > 0 ? (
+              <div className="flex items-center gap-2 text-yellow-400">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span className="text-sm font-medium">
+                  Processing complete ({errorFiles || backendFailedFiles} file{errorFiles !== 1 && backendFailedFiles !== 1 ? 's' : ''} failed)
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-green-400">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-sm font-medium">All files processed</span>
+              </div>
+            )}
             <button
               onClick={() => setIsMinimized(true)}
               className="text-xs text-gray-400 hover:text-gray-200 transition-colors"

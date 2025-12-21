@@ -317,6 +317,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
   const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<APIException | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   // Sync conversationId with initialConversationId when it changes
   useEffect(() => {
@@ -346,6 +347,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
     async (content: string, useStreaming: boolean = true): Promise<void> => {
       setIsLoading(true);
       setError(null);
+      setStatusMessage(null);
 
       // Optimistic update: Add user message immediately
       const userMessage: ChatMessage = {
@@ -365,18 +367,39 @@ export function useChat(folderId: string, initialConversationId: string | null =
           let assistantContent = '';
           let assistantCitations: Citation[] = [];
           let finalConversationId = conversationId || 'new';
+          let assistantMessageCreated = false;
 
-          // Create placeholder assistant message for streaming
-          const assistantMessage: ChatMessage = {
-            message_id: assistantMessageId,
-            conversation_id: finalConversationId,
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            citations: [],
+          // Batch streaming updates for better performance
+          let updateScheduled = false;
+          const scheduleUpdate = () => {
+            if (updateScheduled) return;
+            updateScheduled = true;
+            requestAnimationFrame(() => {
+              updateScheduled = false;
+              if (!assistantMessageCreated) {
+                // First token - create message immediately
+                assistantMessageCreated = true;
+                const assistantMessage: ChatMessage = {
+                  message_id: assistantMessageId,
+                  conversation_id: finalConversationId,
+                  role: 'assistant',
+                  content: assistantContent,
+                  timestamp: new Date(),
+                  citations: [],
+                };
+                setMessages((prev) => [...prev, assistantMessage]);
+              } else {
+                // Subsequent tokens - update existing message
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.message_id === assistantMessageId
+                      ? { ...msg, content: assistantContent }
+                      : msg
+                  )
+                );
+              }
+            });
           };
-
-          setMessages((prev) => [...prev, assistantMessage]);
 
           // Stream response
           await chatService.queryStream(
@@ -386,23 +409,23 @@ export function useChat(folderId: string, initialConversationId: string | null =
               conversation_id: conversationId || undefined,
             },
             (token: string) => {
-              // Update assistant message with new token
+              // Accumulate tokens
               assistantContent += token;
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.message_id === assistantMessageId
-                    ? { ...msg, content: assistantContent }
-                    : msg
-                )
-              );
+              // Schedule batched update (first token will create message immediately)
+              scheduleUpdate();
+              // Clear status message once we start receiving tokens
+              if (statusMessage) {
+                setStatusMessage(null);
+              }
             },
             (citations: Citation[]) => {
-              // Update citations
+              // Update citations (progressive citations) - show immediately
               assistantCitations = citations;
+              console.log('Citations received:', citations.length, 'citations');
               setMessages((prev) =>
                 prev.map((msg) =>
                   msg.message_id === assistantMessageId
-                    ? { ...msg, citations: assistantCitations }
+                    ? { ...msg, citations: [...assistantCitations] } // Create new array to trigger re-render
                     : msg
                 )
               );
@@ -413,22 +436,28 @@ export function useChat(folderId: string, initialConversationId: string | null =
               if (!conversationId) {
                 setConversationId(convId);
               }
+              setStatusMessage(''); // Clear status when done
               setIsLoading(false);
             },
             (err: Error) => {
               const apiError = err instanceof APIException ? err : new APIException('Failed to stream message');
               setError(apiError);
+              setStatusMessage(''); // Clear status on error
               setIsLoading(false);
-              
-              // Remove optimistic messages on error
-              setMessages((prev) => 
-                prev.filter((msg) => 
-                  msg.message_id !== userMessage.message_id && 
-                  msg.message_id !== assistantMessageId
+
+              // Remove optimistic messages on error (only remove assistant message if it was created)
+              setMessages((prev) =>
+                prev.filter((msg) =>
+                  msg.message_id !== userMessage.message_id &&
+                  (assistantMessageCreated ? msg.message_id !== assistantMessageId : true)
                 )
               );
-              
+
               throw apiError;
+            },
+            (status: string) => {
+              // Update status message (e.g., "Retrieving context...", "Generating response...")
+              setStatusMessage(status);
             }
           );
         } else {
@@ -482,6 +511,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
     conversationId,
     isLoading,
     error,
+    statusMessage,
     sendMessage,
     clearMessages,
   };

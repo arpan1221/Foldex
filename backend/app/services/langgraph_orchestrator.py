@@ -107,6 +107,8 @@ class LangGraphOrchestrator:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         use_graph_enhancement: bool = True,
         streaming_callback: Optional[Callable[[str], None]] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        citations_callback: Optional[Callable[[list], None]] = None,
     ) -> Dict[str, Any]:
         """Process query with graph-enhanced RAG.
 
@@ -116,6 +118,9 @@ class LangGraphOrchestrator:
             conversation_id: Optional conversation identifier
             conversation_history: Optional conversation history
             use_graph_enhancement: Whether to use graph enhancement
+            streaming_callback: Optional callback for streaming tokens
+            status_callback: Optional callback for status updates
+            citations_callback: Optional callback for progressive citations
 
         Returns:
             Dictionary with answer, citations, and graph insights
@@ -167,6 +172,8 @@ class LangGraphOrchestrator:
                     conversation_id=conversation_id,
                     query_type=query_state.get("query_intent") if query_state else None,
                     streaming_callback=streaming_callback,
+                    status_callback=status_callback,
+                    citations_callback=citations_callback,
                 )
             elif self.rag_service:
                 # Non-streaming: use RAG service
@@ -176,6 +183,8 @@ class LangGraphOrchestrator:
                     conversation_id=conversation_id,
                     query_type=query_state.get("query_intent") if query_state else None,
                     streaming_callback=None,
+                    status_callback=None,
+                    citations_callback=None,
                 )
 
             # Combine results (RAG service returns "answer", query_state might have "final_answer")
