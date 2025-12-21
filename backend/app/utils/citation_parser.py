@@ -72,15 +72,23 @@ def parse_inline_citations(
         # Track used citations
         if chunk_id not in used_chunk_ids:
             used_chunk_ids.add(chunk_id)
+            # Ensure all required fields are present
+            file_id = meta.get("file_id", "")
+            file_name = meta.get("file_name", "Unknown")
+            
             used_citations.append({
                 "chunk_id": chunk_id,
                 "citation_number": citation_num,
-                "file_name": meta.get("file_name", "Unknown"),
+                "file_id": file_id,  # REQUIRED by frontend
+                "file_name": file_name,
                 "page_number": meta.get("page_number"),
                 "page_display": f"p.{meta.get('page_number')}" if meta.get("page_number") else None,
                 "google_drive_url": meta.get("url") or meta.get("drive_url") or meta.get("google_drive_url"),
+                "mime_type": meta.get("mime_type"),  # Optional but helpful
                 "section": meta.get("section", ""),
                 "content_preview": meta.get("content_preview", "")[:200],
+                "start_time": meta.get("start_time"),  # For audio/video
+                "end_time": meta.get("end_time"),  # For audio/video
             })
         
         # Generate HTML link

@@ -153,6 +153,18 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  const handleFileClick = async (fileId: string, fileName: string, folderId: string) => {
+    try {
+      // Create a new conversation for file-specific chat
+      const newConv = await chatService.createConversation(folderId, `Chat: ${fileName}`);
+      // Navigate to chat with file_id in URL params (we'll handle this in ChatInterface)
+      navigate(`/chat/${folderId}/${newConv.conversation_id}?file_id=${fileId}&file_name=${encodeURIComponent(fileName)}`);
+    } catch (err) {
+      console.error('Failed to start file chat:', err);
+      alert('Failed to start chat with file. Please try again.');
+    }
+  };
+
   const handleFolderExpand = async (folderId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     
@@ -562,6 +574,23 @@ const Sidebar: React.FC = () => {
                         )}
                       </div>
 
+                      {/* Knowledge Graph Button */}
+                      <div className="pt-2 border-t border-gray-800">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/graph/${folder.folder_id}`);
+                          }}
+                          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-gray-400 hover:bg-gray-800/50 hover:text-purple-400 transition-all duration-200 group/kg"
+                          title="View Knowledge Graph"
+                        >
+                          <svg className="w-4 h-4 flex-shrink-0 text-gray-500 group-hover/kg:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                          </svg>
+                          <span className="text-sm font-medium">Knowledge Graph</span>
+                        </button>
+                      </div>
+
                       {/* Files Section (Optional Toggle) */}
                       <div className="pt-2">
                         <div className="px-2 mb-1">
@@ -579,6 +608,8 @@ const Sidebar: React.FC = () => {
                               onToggleExpand={handleToggleNode}
                               formatFileSize={formatFileSize}
                               formatDate={formatDate}
+                              onFileClick={handleFileClick}
+                              folderId={folder.folder_id}
                             />
                           ))
                         ) : (

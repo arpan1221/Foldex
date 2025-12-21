@@ -17,6 +17,7 @@ from app.rag.llm_chains import OllamaLLM
 from app.api.v1.websocket import manager
 from app.core.exceptions import ProcessingError
 from app.utils.datetime_utils import get_eastern_time
+from app.knowledge_graph.graph_builder import GraphBuilder
 
 logger = structlog.get_logger(__name__)
 
@@ -181,7 +182,9 @@ class FolderSummarizer:
             # Step 5: Generate master summary (90% progress)
             # Use lightweight LLM (llama3.2:1b) for fast summary generation
             top_entities = [e["entity"] for e in entity_summary.get("top_entities", [])[:5]]
-            master_summary = await self._generate_lightweight_summary(file_inventory, top_entities)
+            master_summary = await self._generate_lightweight_summary(
+                file_inventory, top_entities, include_subfolder_info=True
+            )
             if send_progress:
                 try:
                     await manager.send_message(
@@ -223,6 +226,7 @@ class FolderSummarizer:
                     "unique_file_types": len(file_inventory["type_distribution"]),
                     "top_themes": [t["theme"] for t in entity_summary.get("top_themes", [])[:5]],
                     "key_relationships": len(relationship_summary),
+                    "subfolder_count": file_inventory.get("subfolder_count", 0),
                 },
                 "learning_completed_at": get_eastern_time(),
             }
@@ -232,6 +236,10 @@ class FolderSummarizer:
 
             # Update learning status
             await self.db.update_folder_learning_status(folder_id, "learning_complete")
+            
+            # Build knowledge graph in background (non-blocking)
+            # This runs asynchronously and doesn't block the response
+            asyncio.create_task(self._build_knowledge_graph_background(folder_id, summary_data))
 
             # Send completion message
             if send_progress:
@@ -309,27 +317,32 @@ class FolderSummarizer:
             raise ProcessingError(f"Folder summarization failed: {str(e)}") from e
 
     async def _collect_file_inventory(self, folder_id: str) -> Dict[str, Any]:
-        """Collect file inventory with type distribution.
+        """Collect file inventory with type distribution, including subfolders.
 
         Args:
-            folder_id: Folder ID
+            folder_id: Folder ID (root folder)
 
         Returns:
-            Dictionary with total_files, type_distribution, and files list
+            Dictionary with total_files, type_distribution, files list, and subfolder info
         """
-        files = await self.db.get_files_by_folder(folder_id)
+        # Get files including subfolders
+        files = await self.db.get_files_by_folder(folder_id, include_subfolders=True)
+        
+        # Get subfolder information
+        subfolders = await self.db.get_subfolders(folder_id)
 
         type_distribution = Counter()
         file_details = []
 
         for file in files:
             mime_type = file.get("mime_type", "unknown")
-            file_type = self._categorize_file_type(mime_type)
+            file_name = file.get("file_name", "")
+            file_type = self._categorize_file_type(mime_type, file_name)
             type_distribution[file_type] += 1
 
             file_details.append({
                 "file_id": file.get("file_id"),
-                "file_name": file.get("file_name"),
+                "file_name": file_name,
                 "file_type": file_type,
                 "mime_type": mime_type,
             })
@@ -338,31 +351,79 @@ class FolderSummarizer:
             "total_files": len(files),
             "type_distribution": dict(type_distribution),
             "files": file_details,
+            "subfolder_count": len(subfolders),
+            "subfolders": [
+                {
+                    "folder_id": sf["folder_id"],
+                    "folder_name": sf["folder_name"],
+                    "file_count": sf.get("file_count", 0),
+                }
+                for sf in subfolders
+            ],
         }
 
-    def _categorize_file_type(self, mime_type: str) -> str:
-        """Categorize MIME type into high-level category.
+    def _categorize_file_type(self, mime_type: str, file_name: Optional[str] = None) -> str:
+        """Categorize MIME type into specific file type category.
+        
+        Keep file types separate - CSV, PDF, MD should NOT be clubbed together.
+        This ensures accurate file type distribution in folder summaries.
 
         Args:
             mime_type: MIME type string
+            file_name: Optional file name for extension-based detection
 
         Returns:
-            File type category
+            Specific file type category
         """
         mime_lower = mime_type.lower()
-
-        if "pdf" in mime_lower:
+        
+        # Check file extension if mime type is too generic
+        if file_name:
+            file_name_lower = file_name.lower()
+            if file_name_lower.endswith('.csv'):
+                return "CSV"
+            elif file_name_lower.endswith(('.tsv', '.tab')):
+                return "TSV"
+            elif file_name_lower.endswith(('.md', '.markdown')):
+                return "Markdown"
+            elif file_name_lower.endswith('.pdf'):
+                return "PDF"
+            elif file_name_lower.endswith(('.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs', '.rb', '.php', '.cs', '.swift', '.kt')):
+                return "Code"
+            elif file_name_lower.endswith(('.html', '.htm')):
+                return "HTML"
+            elif file_name_lower.endswith(('.json', '.xml', '.yaml', '.yml')):
+                return "Data"
+        
+        # MIME type-based detection (more specific first)
+        if mime_lower == "text/csv" or "csv" in mime_lower:
+            return "CSV"
+        elif mime_lower == "text/tab-separated-values" or "tsv" in mime_lower:
+            return "TSV"
+        elif mime_lower == "text/markdown" or "markdown" in mime_lower:
+            return "Markdown"
+        elif "pdf" in mime_lower:
             return "PDF"
         elif "audio" in mime_lower:
             return "Audio"
-        elif "text" in mime_lower or "plain" in mime_lower:
+        elif "image" in mime_lower:
+            return "Image"
+        elif "video" in mime_lower:
+            return "Video"
+        elif "text/html" in mime_lower or "html" in mime_lower:
+            return "HTML"
+        elif "application/json" in mime_lower or "json" in mime_lower:
+            return "Data"
+        elif "text/plain" in mime_lower or (mime_lower.startswith("text/") and "csv" not in mime_lower and "markdown" not in mime_lower):
             return "Text"
-        elif "python" in mime_lower or "javascript" in mime_lower or "code" in mime_lower:
+        elif "python" in mime_lower or "javascript" in mime_lower or "x-python" in mime_lower or "x-javascript" in mime_lower:
             return "Code"
-        elif "document" in mime_lower or "msword" in mime_lower:
+        elif "document" in mime_lower or "msword" in mime_lower or "wordprocessingml" in mime_lower:
             return "Document"
-        elif "spreadsheet" in mime_lower or "excel" in mime_lower:
+        elif "spreadsheet" in mime_lower or "excel" in mime_lower or "officedocument.spreadsheetml" in mime_lower:
             return "Spreadsheet"
+        elif "presentation" in mime_lower or "powerpoint" in mime_lower:
+            return "Presentation"
         else:
             return "Other"
 
@@ -387,17 +448,20 @@ class FolderSummarizer:
         start_time = time.time()
         
         summaries = []
-        # Limit to first 15 files for performance
-        files_to_summarize = file_inventory["files"][:15]
+        # Process ALL files to ensure every file gets at least one line in summary
+        files_to_summarize = file_inventory["files"]
         file_ids = {f["file_id"]: f for f in files_to_summarize}
 
         try:
             # OPTIMIZED: Get all chunks for folder in ONE query instead of N queries
             # Get up to 30 chunks (2 per file for 15 files)
-            all_chunks = await self.db.get_chunks_by_folder(folder_id, limit=1000)
+            all_chunks = await self.db.get_chunks_by_folder(folder_id, limit=1000, include_subfolders=True)
             
-            # Group chunks by file_id and take first 2 per file
+            # Group chunks by file_id - use up to 3 chunks per file for better context
+            # Prioritize earlier chunks as they often contain headers/titles/introductions
             chunks_by_file: Dict[str, List[str]] = {}  # Store content strings only
+            chunk_counts_by_file: Dict[str, int] = {}  # Track chunk count per file
+            
             for chunk in all_chunks:
                 # Handle DocumentChunk objects
                 if hasattr(chunk, 'file_id'):
@@ -411,53 +475,106 @@ class FolderSummarizer:
                 
                 if not file_id or file_id not in file_ids or not content:
                     continue
-                    
+                
+                # Initialize if needed
                 if file_id not in chunks_by_file:
                     chunks_by_file[file_id] = []
-                    
-                if len(chunks_by_file[file_id]) < 2:  # Only keep first 2 chunks per file
+                    chunk_counts_by_file[file_id] = 0
+                
+                # Use up to 3 chunks per file (increased from 2 for better context)
+                # This ensures we capture more content from each file
+                if chunk_counts_by_file[file_id] < 3:
                     chunks_by_file[file_id].append(content)
+                    chunk_counts_by_file[file_id] += 1
 
             # Generate summaries from grouped chunks using lightweight LLM
+            # Ensure EVERY file gets a summary (even if no chunks found)
             for file_id, file_info in file_ids.items():
                 chunks = chunks_by_file.get(file_id, [])
                 
+                # If no chunks found, create a simple summary based on file type and name
                 if not chunks:
+                    file_type_desc = file_info['file_type'].lower()
+                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file in this folder."
+                    summaries.append({
+                        "file_id": file_id,
+                        "file_name": file_info["file_name"],
+                        "file_type": file_info["file_type"],
+                        "summary": summary_text,
+                    })
                     continue
 
-                # Combine chunks (up to 500 chars total for prompt efficiency)
-                combined_content = " ".join(chunks)[:500].strip()
+                # Combine chunks intelligently - use up to 800 chars for better context
+                # This allows for more comprehensive file summaries
+                combined_content = " ".join(chunks)[:800].strip()
                 
                 if not combined_content:
                     continue
 
                 # Generate summary using lightweight LLM
                 try:
-                    summary_prompt = f"""File: {file_info['file_name']} ({file_info['file_type']}).
+                    # Create a more descriptive prompt that guides the LLM better
+                    file_type_description = {
+                        "CSV": "CSV data file",
+                        "TSV": "TSV data file",
+                        "PDF": "PDF document",
+                        "Markdown": "Markdown file",
+                        "Text": "text file",
+                        "Code": "code file",
+                        "Document": "document",
+                        "Spreadsheet": "spreadsheet",
+                        "HTML": "HTML file",
+                        "Data": "data file",
+                        "Audio": "audio file",
+                        "Image": "image file",
+                    }.get(file_info['file_type'], file_info['file_type'].lower() + " file")
+                    
+                    summary_prompt = f"""File: {file_info['file_name']} ({file_type_description}).
 
 Content preview:
 {combined_content}
 
-One sentence summary of this file:"""
+Provide a one-sentence summary describing what this file contains or discusses:"""
                     
                     response = await asyncio.wait_for(
                         self.lightweight_llm.ainvoke(summary_prompt),
-                        timeout=3.0  # 3 second timeout per file
+                        timeout=6.0  # Increased timeout for more reliable completion
                     )
                     summary_text = response.content.strip() if hasattr(response, "content") else str(response).strip()
                     
+                    # Clean up summary (remove quotes, prefixes like "Summary:", etc.)
+                    summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                    summary_text = summary_text.strip('"\'')
+                    
                     if not summary_text or len(summary_text) < 10:
-                        # Fallback to content preview
-                        summary_text = combined_content[:150] + "..." if len(combined_content) > 150 else combined_content
-                except Exception as e:
+                        # Fallback: create a simple descriptive summary
+                        preview = combined_content[:100].replace('\n', ' ').strip()
+                        summary_text = f"{file_info['file_name']} contains {file_type_description.lower()} content: {preview}..."
+                except asyncio.TimeoutError:
                     logger.warning(
-                        "Failed to generate LLM summary for file, using content preview",
+                        "LLM summary generation timed out for file, using fallback",
                         file_id=file_id,
                         file_name=file_info["file_name"],
-                        error=str(e)
+                        timeout_seconds=6.0
                     )
-                    # Fallback to content preview
-                    summary_text = combined_content[:150] + "..." if len(combined_content) > 150 else combined_content
+                    # Fallback: create a descriptive summary from content
+                    preview = combined_content[:100].replace('\n', ' ').strip()
+                    file_type_desc = file_info['file_type'].lower()
+                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file containing: {preview}..."
+                except Exception as e:
+                    error_msg = str(e) if str(e) else f"{type(e).__name__}"
+                    logger.warning(
+                        "Failed to generate LLM summary for file, using fallback",
+                        file_id=file_id,
+                        file_name=file_info["file_name"],
+                        error=error_msg,
+                        error_type=type(e).__name__,
+                        exc_info=False  # Don't log full traceback for expected fallbacks
+                    )
+                    # Fallback: create a descriptive summary from content
+                    preview = combined_content[:100].replace('\n', ' ').strip()
+                    file_type_desc = file_info['file_type'].lower()
+                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file containing: {preview}..."
 
                 summaries.append({
                     "file_id": file_id,
@@ -495,7 +612,7 @@ One sentence summary of this file:"""
         """
         try:
             # Get chunks for the folder
-            chunks = await self.db.get_chunks_by_folder(folder_id, limit=100)
+            chunks = await self.db.get_chunks_by_folder(folder_id, limit=100, include_subfolders=True)
             
             if not chunks:
                 return {
@@ -588,7 +705,7 @@ One sentence summary of this file:"""
         """
         try:
             # Get chunks grouped by file
-            chunks = await self.db.get_chunks_by_folder(folder_id, limit=500)
+            chunks = await self.db.get_chunks_by_folder(folder_id, limit=500, include_subfolders=True)
             
             if not chunks:
                 return []
@@ -662,20 +779,30 @@ One sentence summary of this file:"""
     async def _generate_lightweight_summary(
         self, 
         file_inventory: Dict[str, Any], 
-        top_entities: List[str]
+        top_entities: List[str],
+        include_subfolder_info: bool = False,
     ) -> str:
         """Generate summary with lightweight model - 5 second max.
         
         Args:
-            file_inventory: File inventory data
+            file_inventory: File inventory data (may include subfolder_count and subfolders)
             top_entities: List of top entity strings
+            include_subfolder_info: Whether to include subfolder information in summary
             
         Returns:
             One sentence summary
         """
         # Ultra-short prompt for 1B model
         entity_text = ", ".join(top_entities[:3]) if top_entities else "various topics"
-        prompt = f"""Folder: {file_inventory['total_files']} files. Main topics: {entity_text}. 
+        
+        # Include subfolder information if available
+        subfolder_info = ""
+        if include_subfolder_info and file_inventory.get("subfolder_count", 0) > 0:
+            subfolder_names = [sf["folder_name"] for sf in file_inventory.get("subfolders", [])[:5]]
+            if subfolder_names:
+                subfolder_info = f" Organized in {file_inventory['subfolder_count']} subfolders including: {', '.join(subfolder_names)}."
+        
+        prompt = f"""Folder: {file_inventory['total_files']} files{subfolder_info}. Main topics: {entity_text}. 
         
 One sentence summary:"""
         
@@ -700,7 +827,7 @@ One sentence summary:"""
         """Generate fast folder summary without LLM call.
         
         Args:
-            file_inventory: File inventory data
+            file_inventory: File inventory data (may include subfolder_count and subfolders)
             file_summaries: Per-file summaries
             
         Returns:
@@ -714,7 +841,17 @@ One sentence summary:"""
         if len(file_inventory['files']) > 10:
             file_names += f", and {len(file_inventory['files']) - 10} more"
         
-        return f"This folder contains {file_inventory['total_files']} documents ({type_summary}). Files include: {file_names}."
+        summary = f"This folder contains {file_inventory['total_files']} documents ({type_summary}). Files include: {file_names}."
+        
+        # Add subfolder information if available
+        if file_inventory.get("subfolder_count", 0) > 0:
+            subfolder_names = [sf["folder_name"] for sf in file_inventory.get("subfolders", [])[:5]]
+            if subfolder_names:
+                summary += f" Organized in {file_inventory['subfolder_count']} subfolders: {', '.join(subfolder_names)}."
+            else:
+                summary += f" Organized in {file_inventory['subfolder_count']} subfolder{'s' if file_inventory['subfolder_count'] > 1 else ''}."
+        
+        return summary
 
     async def _generate_master_summary(
         self,
@@ -870,6 +1007,136 @@ Summary:"""
                 "edge_count": 0,
                 "relationship_types": 0,
             }
+
+    async def _build_knowledge_graph_background(
+        self,
+        folder_id: str,
+        summary_data: Dict[str, Any],
+    ) -> None:
+        """Build knowledge graph in background after summarization.
+        
+        This runs asynchronously and doesn't block. Users can continue chatting
+        while the graph is being built. A WebSocket notification is sent when complete.
+        
+        Args:
+            folder_id: Folder ID
+            summary_data: Summary data containing entity and relationship information
+        """
+        try:
+            logger.info("Starting background knowledge graph construction", folder_id=folder_id)
+            
+            # Send initial status update
+            try:
+                await manager.send_message(
+                    folder_id,
+                    {
+                        "type": "graph_building",
+                        "folder_id": folder_id,
+                        "message": "Building knowledge graph...",
+                    },
+                )
+            except Exception as e:
+                logger.warning("Failed to send graph_building WebSocket message", error=str(e))
+            
+            # Get chunks for the folder
+            chunks = await self.db.get_chunks_by_folder(folder_id, limit=500, include_subfolders=True)
+            
+            if not chunks:
+                logger.warning("No chunks found for graph construction", folder_id=folder_id)
+                return
+            
+            # Get relationship summary from summary_data
+            relationship_summary = summary_data.get("relationship_summary", [])
+            
+            # Build graph using GraphBuilder
+            graph_builder = GraphBuilder()
+            graph = await graph_builder.build_graph(
+                chunks=chunks,
+                relationships=relationship_summary,
+            )
+            
+            # Convert graph to JSON format for storage and visualization
+            if hasattr(graph, "to_json"):
+                # FoldexKnowledgeGraph instance
+                graph_json = graph.to_json()
+            else:
+                # NetworkX graph - convert to JSON format
+                import networkx as nx
+                nodes = []
+                for node, data in graph.nodes(data=True):
+                    nodes.append({
+                        "id": str(node),
+                        "label": data.get("label", str(node)),
+                        "type": data.get("type", "unknown"),
+                        "node_type": data.get("node_type", "entity"),
+                    })
+                
+                links = []
+                for source, target, data in graph.edges(data=True):
+                    links.append({
+                        "source": str(source),
+                        "target": str(target),
+                        "relation": data.get("relation", "related"),
+                    })
+                
+                graph_json = {
+                    "nodes": nodes,
+                    "links": links,
+                    "stats": {
+                        "node_count": len(nodes),
+                        "link_count": len(links),
+                        "document_count": len([
+                            n for n in nodes if n.get("node_type") == "document"
+                        ]),
+                    },
+                }
+            
+            # Store graph data as JSON string (not pickle, for easier frontend access)
+            import json
+            graph_data_json = json.dumps(graph_json).encode('utf-8')
+            await self.db.store_knowledge_graph(folder_id, graph_data_json)
+            
+            logger.info(
+                "Knowledge graph built and stored",
+                folder_id=folder_id,
+                node_count=graph_json.get("stats", {}).get("node_count", 0),
+                link_count=graph_json.get("stats", {}).get("link_count", 0),
+            )
+            
+            # Send completion notification
+            try:
+                await manager.send_message(
+                    folder_id,
+                    {
+                        "type": "graph_complete",
+                        "folder_id": folder_id,
+                        "message": "Knowledge graph ready! Click to visualize relationships.",
+                        "graph_stats": graph_json.get("stats", {}),
+                    },
+                )
+            except Exception as e:
+                logger.warning("Failed to send graph_complete WebSocket message", error=str(e))
+                
+        except Exception as e:
+            logger.error(
+                "Background knowledge graph construction failed",
+                folder_id=folder_id,
+                error=str(e),
+                exc_info=True,
+            )
+            # Send error notification (non-blocking)
+            try:
+                await manager.send_message(
+                    folder_id,
+                    {
+                        "type": "graph_error",
+                        "folder_id": folder_id,
+                        "message": "Failed to build knowledge graph",
+                        "error": str(e),
+                    },
+                )
+            except Exception:
+                pass  # Ignore WebSocket errors
 
     async def _store_summary(self, folder_id: str, summary_data: Dict[str, Any]) -> None:
         """Store summary data in database.

@@ -621,7 +621,8 @@ class AdaptiveRetriever:
         if understanding.file_references:
             file_names = understanding.file_references
             if len(file_names) == 1:
-                filter_clause["file_name"] = {"$eq": file_names[0]}
+                # Pass file_name directly for simple equality filter
+                filter_clause["file_name"] = file_names[0]
             else:
                 filter_clause["file_name"] = {"$in": file_names}
         

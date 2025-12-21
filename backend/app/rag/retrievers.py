@@ -664,8 +664,9 @@ class AdaptiveRetriever(BaseRetriever):
         # Initialize content type detector
         object.__setattr__(self, "_content_type_detector", ContentTypeDetector())
         
-        # Initialize query classifier (with LLM enabled for better classification)
-        object.__setattr__(self, "_query_classifier", get_query_classifier(available_files=documents or [], use_llm=True))
+        # Initialize query classifier (disabled for now - not using query classification)
+        # object.__setattr__(self, "_query_classifier", get_query_classifier(available_files=documents or [], use_llm=True))
+        object.__setattr__(self, "_query_classifier", None)
         
         # Initialize classification cache
         object.__setattr__(self, "_classification_cache", {})
@@ -804,35 +805,37 @@ class AdaptiveRetriever(BaseRetriever):
             )
             # CRITICAL: Classify query type and detect content type
             # Cache classification to avoid duplicate work when retriever is called multiple times
+            # Query classifier disabled for now - skip classification
             query_understanding = None
             content_type_filter = None
             
-            if self._query_classifier:
-                # Check cache first
-                cache_key = f"{query}_{id(self._available_files)}"
-                if cache_key in self._classification_cache:
-                    query_understanding = self._classification_cache[cache_key]
-                    logger.debug("Using cached query classification", query=query[:50])
-                else:
-                    # Update classifier with available files if needed
-                    if self._available_files:
-                        self._query_classifier.update_available_files(self._available_files)
-                    
-                    # Classify query (use sync version for synchronous method)
-                    query_understanding = self._query_classifier.classify_sync(query)
-                    # Cache result (limit cache size to prevent memory issues)
-                    if len(self._classification_cache) > 100:
-                        self._classification_cache.clear()
-                    self._classification_cache[cache_key] = query_understanding
-                
-                logger.info(
-                    "Query classified",
-                    query_type=query_understanding.query_type.value,
-                    confidence=query_understanding.confidence,
-                    explanation=query_understanding.explanation,
-                    entities=query_understanding.entities,
-                    file_references=query_understanding.file_references,
-                )
+            # Query classifier disabled - not using query classification
+            # if self._query_classifier:
+            #     # Check cache first
+            #     cache_key = f"{query}_{id(self._available_files)}"
+            #     if cache_key in self._classification_cache:
+            #         query_understanding = self._classification_cache[cache_key]
+            #         logger.debug("Using cached query classification", query=query[:50])
+            #     else:
+            #         # Update classifier with available files if needed
+            #         if self._available_files:
+            #             self._query_classifier.update_available_files(self._available_files)
+            #         
+            #         # Classify query (use sync version for synchronous method)
+            #         query_understanding = self._query_classifier.classify_sync(query)
+            #         # Cache result (limit cache size to prevent memory issues)
+            #         if len(self._classification_cache) > 100:
+            #             self._classification_cache.clear()
+            #         self._classification_cache[cache_key] = query_understanding
+            #     
+            #     logger.info(
+            #         "Query classified",
+            #         query_type=query_understanding.query_type.value,
+            #         confidence=query_understanding.confidence,
+            #         explanation=query_understanding.explanation,
+            #         entities=query_understanding.entities,
+            #         file_references=query_understanding.file_references,
+            #     )
             
             # Also use content type detector for backward compatibility
             if self._content_type_detector:
@@ -861,20 +864,29 @@ class AdaptiveRetriever(BaseRetriever):
                 query_type = self._classify_query(query)  # Fallback to legacy classification
                 logger.debug("Query classified (legacy)", query_type=query_type, query_length=len(query))
             
-            # Build base filter combining folder_id, file_references (highest priority), and content_type
+            # Check for file_id filter (set when user clicks on a file to chat with it)
+            file_id_filter = getattr(self, "_file_id_filter", None)
+            
+            # Build base filter combining folder_id, file_id (highest priority), file_references, and content_type
             base_filter = {}
             if self.folder_id:
                 base_filter["folder_id"] = self.folder_id
             
-            # Priority 1: file_references (specific file names mentioned) - highest priority
-            if query_understanding and query_understanding.file_references:
+            # Priority 1: file_id filter (user clicked on specific file) - highest priority
+            if file_id_filter:
+                # Pass file_id directly for simple equality filter
+                base_filter["file_id"] = file_id_filter
+                logger.debug("Applied file_id filter", file_id=file_id_filter)
+            # Priority 2: file_references (specific file names mentioned) - high priority
+            elif query_understanding and query_understanding.file_references:
                 file_refs = query_understanding.file_references
                 if len(file_refs) == 1:
-                    base_filter["file_name"] = {"$eq": file_refs[0]}
+                    # Pass file_name directly for simple equality filter
+                    base_filter["file_name"] = file_refs[0]
                 elif len(file_refs) > 1:
                     base_filter["file_name"] = {"$in": file_refs}
                 logger.debug("Applied file_references filter", file_references=file_refs)
-            # Priority 2: content_type filter (only if no specific file references)
+            # Priority 3: content_type filter (only if no specific file filters)
             elif content_type_filter and "file_type" in content_type_filter:
                 # Merge file_type filter into base_filter
                 file_type_filter = content_type_filter["file_type"]
@@ -1227,35 +1239,37 @@ class AdaptiveRetriever(BaseRetriever):
             
             # CRITICAL: Classify query type and detect content type
             # Cache classification to avoid duplicate work when retriever is called multiple times
+            # Query classifier disabled for now - skip classification
             query_understanding = None
             content_type_filter = None
             
-            if self._query_classifier:
-                # Check cache first
-                cache_key = f"{query}_{id(files_to_use)}"
-                if cache_key in self._classification_cache:
-                    query_understanding = self._classification_cache[cache_key]
-                    logger.debug("Using cached query classification (async)", query=query[:50])
-                else:
-                    # Update classifier with available files if needed
-                    if files_to_use:
-                        self._query_classifier.update_available_files(files_to_use)
-                    
-                    # Classify query (async version)
-                    query_understanding = await self._query_classifier.classify(query)
-                    # Cache result (limit cache size to prevent memory issues)
-                    if len(self._classification_cache) > 100:
-                        self._classification_cache.clear()
-                    self._classification_cache[cache_key] = query_understanding
-                
-                logger.info(
-                    "Query classified",
-                    query_type=query_understanding.query_type.value,
-                    confidence=query_understanding.confidence,
-                    explanation=query_understanding.explanation,
-                    entities=query_understanding.entities,
-                    file_references=query_understanding.file_references,
-                )
+            # Query classifier disabled - not using query classification
+            # if self._query_classifier:
+            #     # Check cache first
+            #     cache_key = f"{query}_{id(files_to_use)}"
+            #     if cache_key in self._classification_cache:
+            #         query_understanding = self._classification_cache[cache_key]
+            #         logger.debug("Using cached query classification (async)", query=query[:50])
+            #     else:
+            #         # Update classifier with available files if needed
+            #         if files_to_use:
+            #             self._query_classifier.update_available_files(files_to_use)
+            #         
+            #         # Classify query (async version)
+            #         query_understanding = await self._query_classifier.classify(query)
+            #         # Cache result (limit cache size to prevent memory issues)
+            #         if len(self._classification_cache) > 100:
+            #             self._classification_cache.clear()
+            #         self._classification_cache[cache_key] = query_understanding
+            #     
+            #     logger.info(
+            #         "Query classified",
+            #         query_type=query_understanding.query_type.value,
+            #         confidence=query_understanding.confidence,
+            #         explanation=query_understanding.explanation,
+            #         entities=query_understanding.entities,
+            #         file_references=query_understanding.file_references,
+            #     )
             
             # Also use content type detector for backward compatibility
             if self._content_type_detector:
@@ -1276,21 +1290,30 @@ class AdaptiveRetriever(BaseRetriever):
                     if query_understanding and hasattr(query_understanding, 'content_type') and query_understanding.content_type:
                         content_type_filter = {"file_type": {"$in": [query_understanding.content_type]}}
             
+            # Check for file_id filter (set when user clicks on a file to chat with it)
+            file_id_filter = getattr(self, "_file_id_filter", None)
+            
             combined_filter = None
-            if folder_id or self.folder_id or query_understanding and query_understanding.file_references or content_type_filter:
+            if folder_id or self.folder_id or file_id_filter or (query_understanding and query_understanding.file_references) or content_type_filter:
                 combined_filter = {}
                 if folder_id or self.folder_id:
                     combined_filter["folder_id"] = folder_id or self.folder_id
                 
-                # Priority 1: file_references (specific file names mentioned) - highest priority
-                if query_understanding and query_understanding.file_references:
+                # Priority 1: file_id filter (user clicked on specific file) - highest priority
+                if file_id_filter:
+                    # Pass file_id directly (not wrapped in {"$eq": ...}) - _build_chroma_filter handles it
+                    combined_filter["file_id"] = file_id_filter
+                    logger.debug("Applied file_id filter (async)", file_id=file_id_filter)
+                # Priority 2: file_references (specific file names mentioned in query)
+                elif query_understanding and query_understanding.file_references:
                     file_refs = query_understanding.file_references
                     if len(file_refs) == 1:
-                        combined_filter["file_name"] = {"$eq": file_refs[0]}
+                        # Pass file_name directly for simple equality filter
+                        combined_filter["file_name"] = file_refs[0]
                     elif len(file_refs) > 1:
                         combined_filter["file_name"] = {"$in": file_refs}
                     logger.debug("Applied file_references filter (async)", file_references=file_refs)
-                # Priority 2: content_type filter (only if no specific file references)
+                # Priority 3: content_type filter (only if no specific file filters)
                 elif content_type_filter:
                     # Merge content type filter (e.g., file_type)
                     combined_filter.update(content_type_filter)

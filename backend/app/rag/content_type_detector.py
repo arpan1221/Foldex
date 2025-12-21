@@ -302,6 +302,7 @@ class ContentTypeDetector:
         Detect explicit file references in query.
         
         Returns file_id filter with 100% confidence if file is found.
+        Handles both exact filename matches and extension-based patterns (e.g., "csv file").
         
         Args:
             query_lower: Lowercase query
@@ -313,6 +314,94 @@ class ContentTypeDetector:
         if not available_files:
             return None
         
+        # First, check for extension-based patterns (e.g., "csv file", "the csv", "csv files")
+        # This handles queries like "which colleges are in the csv file"
+        extension_patterns = {
+            "csv": [".csv", ".tsv"],
+            "pdf": [".pdf"],
+            "txt": [".txt"],
+            "docx": [".docx", ".doc"],
+            "png": [".png"],
+            "jpg": [".jpg", ".jpeg"],
+            "wav": [".wav"],
+            "mp3": [".mp3"],
+            "html": [".html", ".htm"],
+        }
+        
+        for ext_name, extensions in extension_patterns.items():
+            # Check for patterns like "csv file", "the csv", "csv files", "this csv"
+            patterns = [f"{ext_name} file", f"{ext_name} files", f"the {ext_name}", f"this {ext_name}"]
+            if any(pattern in query_lower for pattern in patterns):
+                # Find all files with matching extensions
+                matching_files = []
+                for file_info in available_files:
+                    file_name = file_info.get("file_name", "")
+                    if not file_name:
+                        continue
+                    
+                    # Check if file has matching extension
+                    for ext in extensions:
+                        if file_name.lower().endswith(ext):
+                            matching_files.append(file_info)
+                            break
+                
+                if matching_files:
+                    # If only one matching file, use file_id filter (preferred)
+                    if len(matching_files) == 1:
+                        file_info = matching_files[0]
+                        file_id = file_info.get("file_id")
+                        file_name = file_info.get("file_name", "")
+                        
+                        if file_id:
+                            where_clause = {"file_id": file_id}
+                            filter_value = file_id
+                            filter_type = "file_id"
+                        else:
+                            where_clause = {"file_name": file_name}
+                            filter_value = file_name
+                            filter_type = "file_name"
+                        
+                        # Determine content type from extension
+                        content_type = ContentType.TEXT if ext_name == "csv" else ContentType.DOCUMENT
+                        
+                        logger.debug(
+                            "Extension-based file reference detected (single file)",
+                            file_name=file_name,
+                            extension=ext_name,
+                            content_type=content_type.value,
+                        )
+                        
+                        return ContentTypeDetection(
+                            filter_type=filter_type,
+                            filter_value=filter_value,
+                            content_type=content_type,
+                            confidence=1.0,
+                            chromadb_where_clause=where_clause,
+                            explanation=f"Extension-based reference to {ext_name} file: '{file_name}'",
+                        )
+                    else:
+                        # Multiple matching files - use file_name with $in operator
+                        file_names = [f.get("file_name") for f in matching_files if f.get("file_name")]
+                        if file_names:
+                            content_type = ContentType.TEXT if ext_name == "csv" else ContentType.DOCUMENT
+                            
+                            logger.debug(
+                                "Extension-based file reference detected (multiple files)",
+                                extension=ext_name,
+                                file_count=len(file_names),
+                                content_type=content_type.value,
+                            )
+                            
+                            return ContentTypeDetection(
+                                filter_type="file_name",
+                                filter_value=file_names,
+                                content_type=content_type,
+                                confidence=0.9,  # Slightly lower since multiple files match
+                                chromadb_where_clause={"file_name": {"$in": file_names}},
+                                explanation=f"Extension-based reference to {ext_name} files: {len(file_names)} files",
+                            )
+        
+        # Fallback: Check for exact filename or base name matches
         for file_info in available_files:
             file_name = file_info.get("file_name", "")
             file_id = file_info.get("file_id")
@@ -339,11 +428,12 @@ class ContentTypeDetector:
                     content_type = ContentType.DOCUMENT
                 
                 # Build filter - prefer file_id if available, otherwise file_name
+                # Pass values directly (not wrapped in {"$eq": ...}) - ChromaDB handles simple equality directly
                 if file_id:
-                    where_clause = {"file_id": {"$eq": file_id}}
+                    where_clause = {"file_id": file_id}
                     filter_value = file_id
                 else:
-                    where_clause = {"file_name": {"$eq": file_name}}
+                    where_clause = {"file_name": file_name}
                     filter_value = file_name
                 
                 logger.debug(

@@ -46,6 +46,10 @@ logger = structlog.get_logger(__name__)
 def clean_response(text: str) -> str:
     """Clean LLM response by removing thinking tags and unwanted content.
 
+    Enhanced cleaning for file-specific chats and general queries to ensure
+    clean, professional responses without thinking tags, meta-commentary, or
+    unwanted artifacts.
+
     Args:
         text: Raw LLM response
 
@@ -101,15 +105,36 @@ def clean_response(text: str) -> str:
     low = text.lower()
     think_idx = low.find("<think>")
     antml_idx = low.find("<antml:thinking>")
-    candidates = [i for i in (think_idx, antml_idx) if i != -1]
+    think_simple_idx = low.find("<think>")
+    candidates = [i for i in (think_idx, antml_idx, think_simple_idx) if i != -1]
     if candidates:
         text = text[min(candidates) :]
 
-    # Remove thinking tags and their content
-    # Match <think>...</think> or </think> tags
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'</?think>', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'</?antml:thinking>', '', text, flags=re.IGNORECASE)
+    # Remove thinking tags and their content (comprehensive pattern matching)
+    # Match various thinking tag formats
+    thinking_patterns = [
+        r'<think>.*?</think>',
+        r'<think>.*?</think>',
+        r'<antml:thinking>.*?</antml:thinking>',
+        r'<reasoning>.*?</reasoning>',
+        r'</?think[^>]*>',
+        r'</?antml:thinking[^>]*>',
+        r'</?redacted_reasoning[^>]*>',
+    ]
+    for pattern in thinking_patterns:
+        text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Remove unwanted prefatory phrases that models sometimes add
+    unwanted_prefixes = [
+        r'^I\'m (?:happy to help|ready to assist|here to help).*?[.!?]\s*',
+        r'^I don\'t see (?:a )?(?:specific )?(?:question|context).*?[.!?]\s*',
+        r'^However, I don\'t see.*?[.!?]\s*',
+        r'^Unfortunately, (?:I don\'t|there is no).*?[.!?]\s*',
+        r'^I\'m ready to help.*?[.!?]\s*',
+        r'^Please provide.*?[.!?]\s*',
+    ]
+    for prefix in unwanted_prefixes:
+        text = re.sub(prefix, '', text, flags=re.IGNORECASE | re.MULTILINE)
 
     # Remove excessive markdown formatting that wasn't requested
     # Only if the response starts with it (likely unwanted structure)
@@ -119,20 +144,49 @@ def clean_response(text: str) -> str:
         if lines and lines[0].startswith('#') and sum(1 for line in lines if line.startswith('#')) == 1:
             text = '\n'.join(lines[1:]).strip()
 
-    # Remove common meta-commentary phrases
+    # Remove common meta-commentary phrases (enhanced list)
     meta_phrases = [
-        r'Based on the (?:context|document|file|provided information)',
-        r'According to the (?:context|document|file|provided information)',
-        r'The (?:context|document|file) (?:states|mentions|says|indicates)',
-        r'From the (?:context|document|file|provided information)',
-        r'In (?:the )?(?:context|document|file)',
+        r'Based on the (?:context|document|file|provided information|information provided)',
+        r'According to the (?:context|document|file|provided information|information provided)',
+        r'The (?:context|document|file) (?:states|mentions|says|indicates|shows|reveals)',
+        r'From the (?:context|document|file|provided information|information provided)',
+        r'In (?:the )?(?:context|document|file|provided information)',
+        r'As (?:mentioned|stated|indicated|shown) in the (?:context|document|file)',
+        r'Looking at the (?:context|document|file|information)',
+        r'According to this (?:context|document|file)',
     ]
     for phrase in meta_phrases:
-        text = re.sub(phrase + r',?\s*', '', text, flags=re.IGNORECASE)
+        # Remove phrase with optional comma/colon and following whitespace
+        text = re.sub(phrase + r'[,:]?\s*', '', text, flags=re.IGNORECASE)
 
-    # Clean up extra whitespace
-    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    # Remove redundant "Regarding X:" prefixes that might be added
+    # This can happen in file-specific chats where the system adds context
+    text = re.sub(r'^Regarding [^:]+:\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Remove common closing phrases that are unnecessary
+    unwanted_closings = [
+        r'\.?\s*Please let me know if you need (?:any )?(?:more )?(?:additional )?(?:information|help|assistance|clarification)\.?$',
+        r'\.?\s*Feel free to ask if you have (?:any )?(?:more )?(?:additional )?(?:questions|queries)\.?$',
+        r'\.?\s*I hope this helps\.?$',
+        r'\.?\s*Let me know if you need anything else\.?$',
+    ]
+    for closing in unwanted_closings:
+        text = re.sub(closing, '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Clean up extra whitespace and normalize line breaks
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Max 2 consecutive newlines
+    text = re.sub(r'[ \t]+', ' ', text)  # Normalize spaces
+    text = re.sub(r' +\n', '\n', text)  # Remove trailing spaces on lines
+    text = re.sub(r'\n +', '\n', text)  # Remove leading spaces on lines
     text = text.strip()
+
+    # Final pass: remove any remaining empty lines at start/end
+    lines = text.split('\n')
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    text = '\n'.join(lines)
 
     return text
 
@@ -188,6 +242,7 @@ class RetrievalQAChain:
             prompt = self.prompt_manager.get_prompt("default")
 
             # Create format_docs function with TTFT optimization
+            # Note: folder_summary is not available at initialization time, will be handled in invoke method
             def format_docs_factory(query_context=None):
                 """Factory to create format_docs with query context."""
                 def format_docs(docs):
@@ -196,6 +251,7 @@ class RetrievalQAChain:
                     if self.ttft_optimizer and query_context:
                         optimized_docs = self.ttft_optimizer.optimize_context(docs, query_context)
                     # Use prompt manager's context formatting for consistent, file-grouped output
+                    # Folder summary will be injected in invoke method's format_docs
                     return self.prompt_manager.format_context(list(optimized_docs))
                 return format_docs
 
@@ -281,7 +337,8 @@ class RetrievalQAChain:
                         optimized_count=len(docs)
                     )
                 # Use prompt manager's context formatting for consistent, file-grouped output
-                return self.prompt_manager.format_context(list(docs))
+                # Include folder summary if available
+                return self.prompt_manager.format_context(list(docs), folder_summary=folder_summary)
 
             # Update prompt if query type is different
             if query_type and query_type != "default":
@@ -477,8 +534,9 @@ class RetrievalQAChain:
                             
                             if token:
                                 final_result["answer"] += token
-                                # Explicitly call streaming callback to ensure it's invoked
-                                # The StreamingCallbackHandler should also fire, but this ensures it
+                                # Note: StreamingCallbackHandler (if in callbacks) already applies ThinkTagStreamFilter
+                                # We call streaming_callback here as a fallback, but the handler should catch it first
+                                # The final answer will be cleaned by clean_response() at the end
                                 if streaming_callback:
                                     try:
                                         streaming_callback(token)
@@ -491,6 +549,8 @@ class RetrievalQAChain:
                         token = event.get("data", {}).get("token", "")
                         if token:
                             final_result["answer"] += token
+                            # Note: StreamingCallbackHandler (if in callbacks) already applies ThinkTagStreamFilter
+                            # The final answer will be cleaned by clean_response() at the end
                             if streaming_callback:
                                 try:
                                     streaming_callback(token)
@@ -753,6 +813,7 @@ class HybridRetrievalChain:
         citations_callback: Optional[Callable[[list], None]] = None,
         callbacks: Optional[List] = None,
         debug_metrics: Optional[DebugMetrics] = None,
+        folder_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Invoke hybrid retrieval chain.
 
@@ -764,6 +825,7 @@ class HybridRetrievalChain:
             citations_callback: Optional callback for progressive citations
             callbacks: Optional list of LangChain callbacks for observability
             debug_metrics: Optional debug metrics collector
+            folder_summary: Optional folder summary dictionary to inject into context
 
         Returns:
             Dictionary with answer and sources
@@ -776,6 +838,7 @@ class HybridRetrievalChain:
             citations_callback=citations_callback,
             callbacks=callbacks,
             debug_metrics=debug_metrics,
+            folder_summary=folder_summary,
         )
 
     def _extract_citations(self, source_documents: List[Document]) -> List[Dict[str, Any]]:

@@ -135,25 +135,28 @@ async def startup_warmup():
     """Run all startup warmup tasks.
 
     This function orchestrates all warmup tasks including:
-    - TTFT optimizer initialization
-    - Main LLM model pre-warming (llama3.2:3b)
-    - Query classifier model pre-warming (llama3.2:1b)
+    - TTFT optimizer initialization (currently commented out - using Ollama's built-in setup)
+    - Main LLM model pre-warming (llama3.2:3b) (currently commented out)
+    - Query classifier model pre-warming (llama3.2:1b) (currently commented out)
+    
+    NOTE: All warmup is currently disabled - relying on Ollama's built-in model loading.
     """
-    logger.info("Starting application warmup")
-    start_time = time.time()
+    logger.info("Application warmup skipped - using Ollama's built-in setup with models kept in memory")
+    # start_time = time.time()
 
     # Run warmup tasks
-    tasks = [
-        initialize_ttft_optimizer(),
-        warmup_llm_model(),
-        warmup_query_classifier_model(),
-    ]
+    # All warmup tasks commented out: Using Ollama's built-in setup with models kept in memory
+    # tasks = [
+    #     initialize_ttft_optimizer(),
+    #     warmup_llm_model(),
+    #     warmup_query_classifier_model(),
+    # ]
 
     # Run concurrently
-    await asyncio.gather(*tasks, return_exceptions=True)
+    # await asyncio.gather(*tasks, return_exceptions=True)
 
-    elapsed = time.time() - start_time
-    logger.info(
-        "Application warmup completed",
-        elapsed_seconds=round(elapsed, 2)
-    )
+    # elapsed = time.time() - start_time
+    # logger.info(
+    #     "Application warmup completed",
+    #     elapsed_seconds=round(elapsed, 2)
+    # )

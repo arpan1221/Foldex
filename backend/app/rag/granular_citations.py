@@ -85,17 +85,25 @@ class GranularCitationExtractor:
             # Build granular citation
             metadata = source_doc.metadata if hasattr(source_doc, "metadata") else {}
 
+            # Build Google Drive URL
+            google_drive_url = self._get_drive_url(metadata)
+            
+            # Extract page number for display
+            page_number = metadata.get("page_number")
+            page_display = f"p.{page_number}" if page_number else None
+            
             citation = {
                 "citation_number": cite_num,
                 "claim_text": claim_text,
 
                 # File metadata
-                "file_id": metadata.get("file_id"),
+                "file_id": metadata.get("file_id") or "",  # Ensure file_id is always present
                 "file_name": metadata.get("file_name", "Unknown"),
                 "mime_type": metadata.get("mime_type"),
 
                 # Location metadata
-                "page_number": metadata.get("page_number"),
+                "page_number": page_number,
+                "page_display": page_display,  # Add page_display for consistency
                 "chunk_id": metadata.get("chunk_id"),
                 "chunk_index": metadata.get("chunk_index"),
 
@@ -118,7 +126,10 @@ class GranularCitationExtractor:
                 "paragraph_index": quote_data.get("paragraph_index"),
 
                 # URLs
-                "google_drive_url": self._get_drive_url(metadata),
+                "google_drive_url": google_drive_url,  # Always include URL (can be None)
+
+                # Content preview
+                "content_preview": quote_data["exact_quote"][:200] if quote_data.get("exact_quote") else "",
 
                 # Full metadata
                 "metadata": metadata,

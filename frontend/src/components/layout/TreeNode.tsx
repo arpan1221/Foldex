@@ -9,6 +9,8 @@ interface TreeNodeProps {
   onToggleExpand: (nodeId: string) => void;
   formatFileSize: (bytes: number) => string;
   formatDate: (dateStr?: string | Date) => string;
+  onFileClick?: (fileId: string, fileName: string, folderId: string) => void;
+  folderId?: string;
 }
 
 /**
@@ -21,16 +23,28 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   onToggleExpand,
   formatFileSize,
   formatDate,
+  onFileClick,
+  folderId,
 }) => {
   const isExpanded = expandedNodes.has(node.id);
   const hasChildren = node.children && node.children.length > 0;
   const indent = level * 16;
+  const isFile = !node.is_folder;
+
+  const handleFileClick = () => {
+    if (isFile && onFileClick && folderId && node.id) {
+      onFileClick(node.id, node.name, folderId);
+    }
+  };
 
   return (
     <div className="select-none">
       <div
-        className="flex items-center gap-1 py-1 px-2 rounded hover:bg-gray-800/50 transition-colors group"
+        className={`flex items-center gap-1 py-1 px-2 rounded transition-colors group ${
+          isFile && onFileClick ? 'hover:bg-gray-800/50 cursor-pointer' : 'hover:bg-gray-800/50'
+        }`}
         style={{ paddingLeft: `${8 + indent}px` }}
+        onClick={isFile && onFileClick ? handleFileClick : undefined}
       >
         {node.is_folder && hasChildren && (
           <button
@@ -120,6 +134,8 @@ const TreeNode: React.FC<TreeNodeProps> = ({
               onToggleExpand={onToggleExpand}
               formatFileSize={formatFileSize}
               formatDate={formatDate}
+              onFileClick={onFileClick}
+              folderId={folderId}
             />
           ))}
         </div>

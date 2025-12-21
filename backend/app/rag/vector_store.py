@@ -984,7 +984,12 @@ class LangChainVectorStore:
         simple_filters = {}
         for key in direct_keys:
             if key in filter_dict:
-                simple_filters[key] = filter_dict[key]
+                value = filter_dict[key]
+                # Extract value from {"$eq": value} format if present
+                if isinstance(value, dict) and "$eq" in value:
+                    simple_filters[key] = value["$eq"]
+                else:
+                    simple_filters[key] = value
         
         # If we have multiple simple filters, use $and
         if len(simple_filters) > 1:

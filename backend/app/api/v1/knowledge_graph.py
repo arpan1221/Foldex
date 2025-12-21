@@ -40,65 +40,43 @@ async def get_knowledge_graph(
                 detail="User ID not found in token",
             )
         
-        # Get all chunks for this folder
+        # Get stored graph data from database
         db = SQLiteManager()
-        chunks_data = await db.get_chunks_by_folder(folder_id)
+        graph_data_bytes = await db.get_knowledge_graph(folder_id)
         
-        if not chunks_data:
-            return {
-                "nodes": [],
-                "links": [],
-                "stats": {
-                    "node_count": 0,
-                    "link_count": 0,
-                    "document_count": 0,
-                },
-                "message": "No documents found in folder",
-            }
+        if graph_data_bytes:
+            # Decode stored JSON graph data
+            import json
+            try:
+                graph_json = json.loads(graph_data_bytes.decode('utf-8'))
+                logger.info(
+                    "Knowledge graph retrieved from database",
+                    folder_id=folder_id,
+                    node_count=graph_json.get("stats", {}).get("node_count", 0),
+                    link_count=graph_json.get("stats", {}).get("link_count", 0),
+                )
+                return graph_json
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning(
+                    "Failed to decode stored graph data, will rebuild",
+                    folder_id=folder_id,
+                    error=str(e),
+                )
+                # Fall through to rebuild if decoding fails
         
-        # Convert to LangChain Documents
-        from langchain_core.documents import Document
-        chunks = []
-        for chunk_data in chunks_data:
-            # Handle both dict and DocumentChunk objects
-            if isinstance(chunk_data, dict):
-                content = chunk_data.get("content", "")
-                metadata = chunk_data.get("metadata", {})
-                file_name = metadata.get("file_name", "unknown")
-                chunk_id = chunk_data.get("chunk_id")
-                file_id = chunk_data.get("file_id")
-            else:
-                # DocumentChunk object
-                content = chunk_data.content
-                metadata = chunk_data.metadata or {}
-                file_name = metadata.get("file_name", "unknown")
-                chunk_id = chunk_data.chunk_id
-                file_id = chunk_data.file_id
-            
-            chunks.append(Document(
-                page_content=content,
-                metadata={
-                    "file_name": file_name,
-                    "chunk_id": chunk_id,
-                    "file_id": file_id,
-                },
-            ))
-        
-        # Build knowledge graph
-        kg = FoldexKnowledgeGraph()
-        kg.build_from_documents(chunks)
-        
-        # Export to JSON
-        graph_json = kg.to_json()
-        
-        logger.info(
-            "Knowledge graph retrieved",
-            folder_id=folder_id,
-            node_count=graph_json["stats"]["node_count"],
-            link_count=graph_json["stats"]["link_count"],
-        )
-        
-        return graph_json
+        # Graph not yet built or failed to decode - return empty graph
+        # Frontend can show a message that graph is being built
+        return {
+            "nodes": [],
+            "links": [],
+            "stats": {
+                "node_count": 0,
+                "link_count": 0,
+                "document_count": 0,
+            },
+            "message": "Knowledge graph is being built. Please check back in a moment.",
+            "building": True,
+        }
         
     except Exception as e:
         logger.error(

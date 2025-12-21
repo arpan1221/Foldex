@@ -114,6 +114,9 @@ class LangChainRAGService:
 
         # Initialize citation engine for sophisticated citation mapping
         self.citation_engine = CitationEngine(db=SQLiteManager())
+        
+        # Initialize database manager for folder summary retrieval
+        self.db = SQLiteManager()
 
         # Cache for retrievers and chains per folder
         self.retrievers: Dict[str, BaseRetriever] = {}
@@ -267,6 +270,7 @@ class LangChainRAGService:
         streaming_callback: Optional[Callable[[str], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         citations_callback: Optional[Callable[[list], None]] = None,
+        file_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute RAG query with hybrid retrieval.
 
@@ -318,6 +322,26 @@ class LangChainRAGService:
             langsmith_monitor = get_langsmith_monitor()
             callbacks = langsmith_monitor.get_callbacks()
 
+            # If file_id is provided, add it to the filter for retrieval
+            # This will be used to filter chunks to only the specified file
+            if file_id and folder_id in self.retrievers:
+                retriever = self.retrievers[folder_id]
+                # Set file_id filter on retriever (will be used in aget_relevant_documents)
+                if hasattr(retriever, "_file_id_filter"):
+                    object.__setattr__(retriever, "_file_id_filter", file_id)
+                    logger.debug("Set file_id filter on retriever", file_id=file_id)
+            
+            # Get folder summary to inject into context for better accuracy
+            folder_summary = None
+            try:
+                folder_summary = await self.db.get_folder_summary(folder_id)
+                if folder_summary:
+                    logger.debug("Retrieved folder summary for context injection", folder_id=folder_id)
+                else:
+                    logger.debug("No folder summary available for this folder", folder_id=folder_id)
+            except Exception as e:
+                logger.warning("Failed to retrieve folder summary, continuing without it", folder_id=folder_id, error=str(e))
+            
             # Invoke chain with LangSmith callbacks and progress callbacks
             invoke_kwargs: Dict[str, Any] = {
                 "query": query,
@@ -325,6 +349,7 @@ class LangChainRAGService:
                 "streaming_callback": streaming_callback,
                 "status_callback": status_callback,
                 "citations_callback": citations_callback,
+                "folder_summary": folder_summary,  # Inject folder summary for better context
             }
             if callbacks:
                 invoke_kwargs["callbacks"] = callbacks
@@ -575,11 +600,12 @@ class LangChainRAGService:
             citation_objects: List of Citation Pydantic objects from CitationEngine
             
         Returns:
-            List of citation dictionaries compatible with existing API format
+            List of citation dictionaries compatible with existing API format,
+            including citation_number for proper frontend display
         """
         citations = []
         
-        for citation in citation_objects:
+        for idx, citation in enumerate(citation_objects, 1):
             # Extract timestamp range if available
             timestamp_range = citation.timestamp_range
             start_time = timestamp_range[0] if timestamp_range else None
@@ -588,11 +614,21 @@ class LangChainRAGService:
             # Extract line range if available
             line_range = citation.line_range
             
+            # Build Google Drive URL
+            file_id = citation.source_file_id
+            google_drive_url = f"https://drive.google.com/file/d/{file_id}/view" if file_id else None
+            
+            # Extract page number for display
+            page_number = citation.page_number
+            page_display = f"p.{page_number}" if page_number else None
+            
             citation_dict = {
-                "file_id": citation.source_file_id,
+                "citation_number": idx,  # Assign sequential citation numbers
+                "file_id": file_id or "",  # Ensure file_id is present
                 "file_name": citation.source_file_name,
                 "chunk_id": citation.chunk_id,
-                "page_number": citation.page_number,
+                "page_number": page_number,
+                "page_display": page_display,
                 "start_time": start_time,
                 "end_time": end_time,
                 "line_range": line_range,
@@ -602,6 +638,8 @@ class LangChainRAGService:
                 "file_type": citation.file_type.value if hasattr(citation.file_type, "value") else str(citation.file_type),
                 "content_preview": citation.excerpt[:200],  # Use excerpt as preview
                 "relevance_score": citation.confidence,  # Use confidence as relevance
+                "google_drive_url": google_drive_url,  # Always include URL
+                "mime_type": None,  # Could be inferred from file_type if needed
             }
             
             citations.append(citation_dict)
@@ -620,19 +658,37 @@ class LangChainRAGService:
             source_documents: List of source Document objects
 
         Returns:
-            List of citation dictionaries with full metadata
+            List of citation dictionaries with full metadata, including citation_number
         """
         citations = []
 
-        for doc in source_documents:
+        for idx, doc in enumerate(source_documents, 1):
             metadata = doc.metadata if hasattr(doc, "metadata") else {}
+
+            # Build Google Drive URL if file_id is available
+            file_id = metadata.get("file_id")
+            google_drive_url = None
+            if file_id:
+                google_drive_url = f"https://drive.google.com/file/d/{file_id}/view"
+            elif metadata.get("google_drive_url"):
+                google_drive_url = metadata.get("google_drive_url")
+            elif metadata.get("drive_url"):
+                google_drive_url = metadata.get("drive_url")
+            elif metadata.get("url"):
+                google_drive_url = metadata.get("url")
+
+            # Extract page number for display
+            page_number = metadata.get("page_number")
+            page_display = f"p.{page_number}" if page_number else None
 
             # Extract all relevant metadata for citations
             citation = {
-                "file_id": metadata.get("file_id"),
+                "citation_number": idx,  # Assign sequential citation numbers
+                "file_id": file_id or "",  # Ensure file_id is present (empty string if missing)
                 "file_name": metadata.get("file_name", "Unknown"),
                 "chunk_id": metadata.get("chunk_id"),
-                "page_number": metadata.get("page_number"),
+                "page_number": page_number,
+                "page_display": page_display,
                 "chunk_index": metadata.get("chunk_index"),
                 "start_time": metadata.get("start_time") or metadata.get("segment_start"),
                 "end_time": metadata.get("end_time") or metadata.get("segment_end"),
@@ -642,6 +698,7 @@ class LangChainRAGService:
                     if hasattr(doc, "page_content")
                     else str(doc)[:200]
                 ),
+                "google_drive_url": google_drive_url,  # Always include URL
                 "source": metadata.get("source"),
                 "file_path": metadata.get("file_path"),
                 "mime_type": metadata.get("mime_type"),

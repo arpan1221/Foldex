@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
 import { useFolderProcessor } from '../../hooks/useFolderProcessor';
 import { folderService, chatService } from '../../services/api';
@@ -10,6 +10,7 @@ import LoadingOverlay from '../common/LoadingOverlay';
 import ProcessingStatus from '../folder/ProcessingStatus';
 import FolderSummaryDisplay from '../folder/FolderSummaryDisplay';
 import AIAssistantIcon from '../common/AIAssistantIcon';
+import FileBadge from '../common/FileBadge';
 
 /**
  * ChatInterface Component
@@ -19,9 +20,12 @@ import AIAssistantIcon from '../common/AIAssistantIcon';
  */
 const ChatInterface: React.FC = () => {
   const { folderId: paramFolderId, conversationId: paramConversationId } = useParams<{ folderId: string, conversationId: string }>();
+  const [searchParams] = useSearchParams();
   const folderId = paramFolderId || '';
   const conversationId = paramConversationId || null;
-  const { messages, sendMessage, isLoading, error, statusMessage } = useChat(folderId, conversationId);
+  const fileId = searchParams.get('file_id') || undefined;
+  const fileName = searchParams.get('file_name') || undefined;
+  const { messages, sendMessage, isLoading, error, statusMessage } = useChat(folderId, conversationId, fileId);
   const { status: processingStatus, isProcessing, error: processingError } = useFolderProcessor();
   const [folderExistsInSidebar, setFolderExistsInSidebar] = useState(false);
   const [folderMetadata, setFolderMetadata] = useState<{ file_count: number } | null>(null);
@@ -194,7 +198,7 @@ const ChatInterface: React.FC = () => {
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isLoading) return;
-    await sendMessage(content, true);
+    await sendMessage(content, true, fileId);
   };
 
   // Determine if welcome message should be shown (only for initial chat with no messages)
@@ -303,6 +307,16 @@ const ChatInterface: React.FC = () => {
       {folderId && (
         <div className="px-4 sm:px-6 pb-4">
           <div className="max-w-3xl mx-auto">
+            {/* File Reference Badge */}
+            {fileId && fileName && (
+              <div className="mb-4 flex items-center gap-2">
+                <span className="text-xs text-gray-500">Chatting with:</span>
+                <FileBadge
+                  fileName={fileName}
+                  className="!px-2 !py-1 !text-xs"
+                />
+              </div>
+            )}
             <FolderSummaryDisplay folderId={folderId} />
           </div>
         </div>

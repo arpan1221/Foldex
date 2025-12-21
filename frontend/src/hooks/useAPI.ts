@@ -312,7 +312,7 @@ export function useFolders() {
  * 
  * Chat API operations with optimistic updates.
  */
-export function useChat(folderId: string, initialConversationId: string | null = null) {
+export function useChat(folderId: string, initialConversationId: string | null = null, fileId?: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
   const [isLoading, setIsLoading] = useState(false);
@@ -344,7 +344,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
   }, []);
 
   const sendMessage = useCallback(
-    async (content: string, useStreaming: boolean = true): Promise<void> => {
+    async (content: string, useStreaming: boolean = true, fileId?: string): Promise<void> => {
       setIsLoading(true);
       setError(null);
       setStatusMessage(null);
@@ -407,6 +407,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
               query: content,
               folder_id: folderId,
               conversation_id: conversationId || undefined,
+              file_id: fileId,
             },
             (token: string) => {
               // Accumulate tokens
@@ -466,6 +467,7 @@ export function useChat(folderId: string, initialConversationId: string | null =
             query: content,
             folder_id: folderId,
             conversation_id: conversationId || undefined,
+            file_id: fileId,
           });
 
           // Update conversation ID if new

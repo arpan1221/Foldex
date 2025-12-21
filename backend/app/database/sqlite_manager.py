@@ -163,13 +163,14 @@ class SQLiteManager:
             raise DatabaseError(f"Failed to store chunks: {str(e)}") from e
 
     async def get_chunks_by_folder(
-        self, folder_id: str, limit: Optional[int] = None
+        self, folder_id: str, limit: Optional[int] = None, include_subfolders: bool = False
     ) -> List[DocumentChunk]:
-        """Get all chunks for a folder.
+        """Get all chunks for a folder, optionally including subfolders.
 
         Args:
-            folder_id: Folder ID
+            folder_id: Folder ID (root folder)
             limit: Optional limit on number of chunks
+            include_subfolders: If True, include chunks from all subfolders
 
         Returns:
             List of document chunks
@@ -179,13 +180,41 @@ class SQLiteManager:
         """
         try:
             async with self._get_db_manager().get_session() as session:
-                # Use selectinload to eagerly load the file relationship
-                query = (
-                    select(ChunkRecord)
-                    .options(selectinload(ChunkRecord.file))
-                    .join(FileRecord, ChunkRecord.file_id == FileRecord.file_id)
-                    .where(FileRecord.folder_id == folder_id)
-                )
+                if include_subfolders:
+                    # Get root_folder_id for the given folder
+                    folder_stmt = select(FolderRecord).where(FolderRecord.folder_id == folder_id)
+                    folder_result = await session.execute(folder_stmt)
+                    folder = folder_result.scalar_one_or_none()
+                    
+                    if not folder:
+                        return []
+                    
+                    # Use root_folder_id if available, otherwise use folder_id as root
+                    root_folder_id = folder.root_folder_id or folder_id
+                    
+                    # Get all folders with this root_folder_id (including the root itself)
+                    subfolder_stmt = select(FolderRecord.folder_id).where(
+                        FolderRecord.root_folder_id == root_folder_id
+                    )
+                    subfolder_result = await session.execute(subfolder_stmt)
+                    folder_ids = [row[0] for row in subfolder_result.all()]
+                    
+                    # Use selectinload to eagerly load the file relationship
+                    query = (
+                        select(ChunkRecord)
+                        .options(selectinload(ChunkRecord.file))
+                        .join(FileRecord, ChunkRecord.file_id == FileRecord.file_id)
+                        .where(FileRecord.folder_id.in_(folder_ids))
+                    )
+                else:
+                    # Just get chunks from the specified folder
+                    # Use selectinload to eagerly load the file relationship
+                    query = (
+                        select(ChunkRecord)
+                        .options(selectinload(ChunkRecord.file))
+                        .join(FileRecord, ChunkRecord.file_id == FileRecord.file_id)
+                        .where(FileRecord.folder_id == folder_id)
+                    )
 
                 if limit:
                     query = query.limit(limit)
@@ -197,10 +226,9 @@ class SQLiteManager:
                 for chunk_record in chunk_records:
                     file_record = chunk_record.file
                     # Access metadata via chunk_metadata attribute (SQLAlchemy model uses chunk_metadata)
-                    if hasattr(chunk_record, "chunk_metadata") and chunk_record.chunk_metadata:
+                    # chunk_metadata is a JSON column, so it's already a dict or None
+                    if chunk_record.chunk_metadata and isinstance(chunk_record.chunk_metadata, dict):
                         metadata = dict(chunk_record.chunk_metadata)
-                    elif hasattr(chunk_record, "metadata") and chunk_record.metadata:
-                        metadata = dict(chunk_record.metadata)
                     else:
                         metadata = {}
                     metadata["file_name"] = file_record.file_name
@@ -269,10 +297,9 @@ class SQLiteManager:
                 for chunk_record in chunk_records:
                     file_record = chunk_record.file
                     # Access metadata via chunk_metadata attribute (SQLAlchemy model uses chunk_metadata)
-                    if hasattr(chunk_record, "chunk_metadata") and chunk_record.chunk_metadata:
+                    # chunk_metadata is a JSON column, so it's already a dict or None
+                    if chunk_record.chunk_metadata and isinstance(chunk_record.chunk_metadata, dict):
                         metadata = dict(chunk_record.chunk_metadata)
-                    elif hasattr(chunk_record, "metadata") and chunk_record.metadata:
-                        metadata = dict(chunk_record.metadata)
                     else:
                         metadata = {}
                     metadata["file_name"] = file_record.file_name
@@ -310,6 +337,7 @@ class SQLiteManager:
         content: str,
         user_id: str,
         folder_id: Optional[str] = None,
+        file_id: Optional[str] = None,
         citations: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Store chat message.
@@ -320,6 +348,7 @@ class SQLiteManager:
             content: Message content
             user_id: User ID
             folder_id: Optional folder ID
+            file_id: Optional file ID for file-specific chats
             citations: Optional list of citations
 
         Returns:
@@ -340,6 +369,7 @@ class SQLiteManager:
                         conversation_id=conversation_id,
                         user_id=user_id,
                         folder_id=folder_id,
+                        file_id=file_id,  # Store file_id for file-specific chats
                         title=content[:50] + ("..." if len(content) > 50 else "") if role == "user" else "New Chat",
                         created_at=datetime.utcnow(),
                         updated_at=datetime.utcnow(),
@@ -348,6 +378,9 @@ class SQLiteManager:
                 elif conversation.title == "New Chat" and role == "user":
                     # Update title if it's still the default and this is the first user message
                     conversation.title = content[:50] + ("..." if len(content) > 50 else "")
+                    # Also update file_id if provided and not already set
+                    if file_id and not conversation.file_id:
+                        conversation.file_id = file_id
 
                 # Create message
                 message_id = str(uuid.uuid4())
@@ -366,6 +399,9 @@ class SQLiteManager:
                 conversation.updated_at = datetime.utcnow()
                 if folder_id and not conversation.folder_id:
                     conversation.folder_id = folder_id
+                # Also update file_id if provided and not already set
+                if file_id and not conversation.file_id:
+                    conversation.file_id = file_id
 
                 await session.commit()
 
@@ -414,6 +450,7 @@ class SQLiteManager:
                     {
                         "conversation_id": conv.conversation_id,
                         "folder_id": conv.folder_id,
+                        "file_id": conv.file_id,  # Include file_id for file-specific chats
                         "title": conv.title or "Untitled Chat",
                         "created_at": conv.created_at,
                         "updated_at": conv.updated_at,
@@ -430,7 +467,7 @@ class SQLiteManager:
             raise DatabaseError(f"Failed to get folder conversations: {str(e)}") from e
 
     async def create_conversation(
-        self, user_id: str, folder_id: str, title: str = "New Chat"
+        self, user_id: str, folder_id: str, title: str = "New Chat", file_id: Optional[str] = None
     ) -> str:
         """Create a new conversation session.
 
@@ -438,6 +475,7 @@ class SQLiteManager:
             user_id: User ID
             folder_id: Folder ID
             title: Initial title
+            file_id: Optional file ID for file-specific chats
 
         Returns:
             New conversation ID
@@ -449,6 +487,7 @@ class SQLiteManager:
                     conversation_id=conversation_id,
                     user_id=user_id,
                     folder_id=folder_id,
+                    file_id=file_id,  # Store file_id for file-specific chats
                     title=title,
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
@@ -1034,11 +1073,14 @@ class SQLiteManager:
             logger.error("Failed to update folder status", folder_id=folder_id, error=str(e), exc_info=True)
             raise DatabaseError(f"Failed to update folder status: {str(e)}") from e
 
-    async def get_files_by_folder(self, folder_id: str) -> List[Dict[str, Any]]:
-        """Get all files in a folder.
+    async def get_files_by_folder(
+        self, folder_id: str, include_subfolders: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Get all files in a folder, optionally including subfolders.
 
         Args:
             folder_id: Folder ID
+            include_subfolders: If True, include files from all subfolders
 
         Returns:
             List of file dictionaries
@@ -1048,7 +1090,32 @@ class SQLiteManager:
         """
         try:
             async with self._get_db_manager().get_session() as session:
-                stmt = select(FileRecord).where(FileRecord.folder_id == folder_id)
+                if include_subfolders:
+                    # Get root_folder_id for the given folder
+                    folder_stmt = select(FolderRecord).where(FolderRecord.folder_id == folder_id)
+                    folder_result = await session.execute(folder_stmt)
+                    folder = folder_result.scalar_one_or_none()
+                    
+                    if not folder:
+                        # Folder doesn't exist, return empty list
+                        return []
+                    
+                    # Use root_folder_id if available, otherwise use folder_id as root
+                    root_folder_id = folder.root_folder_id or folder_id
+                    
+                    # Get all folders with this root_folder_id (including the root itself)
+                    subfolder_stmt = select(FolderRecord.folder_id).where(
+                        FolderRecord.root_folder_id == root_folder_id
+                    )
+                    subfolder_result = await session.execute(subfolder_stmt)
+                    folder_ids = [row[0] for row in subfolder_result.all()]
+                    
+                    # Get all files from all these folders
+                    stmt = select(FileRecord).where(FileRecord.folder_id.in_(folder_ids))
+                else:
+                    # Just get files from the specified folder
+                    stmt = select(FileRecord).where(FileRecord.folder_id == folder_id)
+                
                 result = await session.execute(stmt)
                 files = result.scalars().all()
 
@@ -1069,10 +1136,62 @@ class SQLiteManager:
             logger.error(
                 "Failed to get files by folder",
                 folder_id=folder_id,
+                include_subfolders=include_subfolders,
                 error=str(e),
                 exc_info=True,
             )
             raise DatabaseError(f"Failed to get files: {str(e)}") from e
+
+    async def get_subfolders(self, folder_id: str) -> List[Dict[str, Any]]:
+        """Get all subfolders of a folder.
+
+        Args:
+            folder_id: Parent folder ID
+
+        Returns:
+            List of subfolder dictionaries with folder_id and folder_name
+
+        Raises:
+            DatabaseError: If query fails
+        """
+        try:
+            async with self._get_db_manager().get_session() as session:
+                # Get root_folder_id for the given folder
+                folder_stmt = select(FolderRecord).where(FolderRecord.folder_id == folder_id)
+                folder_result = await session.execute(folder_stmt)
+                folder = folder_result.scalar_one_or_none()
+                
+                if not folder:
+                    return []
+                
+                # Use root_folder_id if available, otherwise use folder_id as root
+                root_folder_id = folder.root_folder_id or folder_id
+                
+                # Get all subfolders (folders with this root_folder_id that have a parent)
+                stmt = select(FolderRecord).where(
+                    FolderRecord.root_folder_id == root_folder_id,
+                    FolderRecord.folder_id != root_folder_id,  # Exclude root folder itself
+                )
+                result = await session.execute(stmt)
+                subfolders = result.scalars().all()
+
+                return [
+                    {
+                        "folder_id": sf.folder_id,
+                        "folder_name": sf.folder_name,
+                        "parent_folder_id": sf.parent_folder_id,
+                        "file_count": sf.file_count,
+                    }
+                    for sf in subfolders
+                ]
+        except Exception as e:
+            logger.error(
+                "Failed to get subfolders",
+                folder_id=folder_id,
+                error=str(e),
+                exc_info=True,
+            )
+            raise DatabaseError(f"Failed to get subfolders: {str(e)}") from e
 
     async def get_file_count_by_folder(self, folder_id: str) -> int:
         """Get file count for a folder.

@@ -64,6 +64,7 @@ class ConversationRecord(Base):
     conversation_id = Column(String, primary_key=True, index=True)
     user_id = Column(String, nullable=False, index=True)
     folder_id = Column(String, nullable=True, index=True)
+    file_id = Column(String, nullable=True, index=True)  # For file-specific chats
     title = Column(String, nullable=True)  # Added title for UI
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -202,6 +203,7 @@ class ConversationModel(BaseModel):
     conversation_id: str = Field(..., description="Unique conversation identifier")
     user_id: str = Field(..., description="User identifier")
     folder_id: Optional[str] = Field(None, description="Associated folder ID")
+    file_id: Optional[str] = Field(None, description="Associated file ID for file-specific chats")
     title: Optional[str] = Field(None, description="Conversation title")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

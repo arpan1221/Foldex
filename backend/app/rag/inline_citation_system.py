@@ -115,12 +115,20 @@ CITATION REQUIREMENTS:
                 doc = source_documents[doc_idx]
                 metadata = doc.metadata if hasattr(doc, "metadata") else {}
                 
+                # Build Google Drive URL
+                google_drive_url = self._get_drive_url(metadata)
+                
+                # Extract page number for display
+                page_number = metadata.get("page_number")
+                page_display = f"p.{page_number}" if page_number else None
+                
                 citation = {
                     "citation_number": num,
-                    "file_id": metadata.get("file_id"),
+                    "file_id": metadata.get("file_id") or "",  # Ensure file_id is always present
                     "file_name": metadata.get("file_name", "Unknown"),
                     "chunk_id": metadata.get("chunk_id"),
-                    "page_number": metadata.get("page_number"),
+                    "page_number": page_number,
+                    "page_display": page_display,  # Add page_display for consistency
                     "chunk_index": metadata.get("chunk_index"),
                     "start_time": metadata.get("start_time"),
                     "end_time": metadata.get("end_time"),
@@ -132,7 +140,7 @@ CITATION REQUIREMENTS:
                     "source": metadata.get("source"),
                     "file_path": metadata.get("file_path"),
                     "mime_type": metadata.get("mime_type"),
-                    "google_drive_url": self._get_drive_url(metadata),
+                    "google_drive_url": google_drive_url,  # Always include URL (can be None)
                     "metadata": metadata,
                 }
                 used_citations.append(citation)

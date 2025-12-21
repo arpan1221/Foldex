@@ -353,11 +353,17 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
                     content = str(chunk)
                 
                 chunk_map[chunk_id] = {
+                    "file_id": meta.get("file_id", ""),  # REQUIRED for citations
                     "file_name": meta.get("file_name", "Unknown"),
                     "page_number": meta.get("page_number"),
+                    "mime_type": meta.get("mime_type"),  # For file type detection
                     "url": meta.get("drive_url") or meta.get("google_drive_url") or meta.get("url"),
+                    "drive_url": meta.get("drive_url"),  # Explicit drive URL
+                    "google_drive_url": meta.get("google_drive_url"),  # Explicit Google Drive URL
                     "section": meta.get("section", ""),
                     "content_preview": content[:150],
+                    "start_time": meta.get("start_time"),  # For audio/video citations
+                    "end_time": meta.get("end_time"),  # For audio/video citations
                 }
                 
                 # Build chunk reference for prompt

@@ -24,11 +24,21 @@ async def show_vector_store_contents():
     
     try:
         async with db_manager.get_session() as session:
-            # Get most recent folder
-            stmt = select(FolderRecord).order_by(FolderRecord.created_at.desc()).limit(1)
+            # Get Test Folder by name
+            stmt = select(FolderRecord).where(FolderRecord.folder_name == "Test Folder")
             folder = (await session.execute(stmt)).scalar_one_or_none()
+            
+            if not folder:
+                print('❌ "Test Folder" not found in database')
+                # Fallback to most recent folder
+                stmt = select(FolderRecord).order_by(FolderRecord.created_at.desc()).limit(1)
+                folder = (await session.execute(stmt)).scalar_one_or_none()
+                if not folder:
+                    print('❌ No folders found in database')
+                    return
+            
             folder_id = folder.folder_id
-            print(f'\n📁 Folder: {folder.folder_name}\n')
+            print(f'\n📁 Folder: {folder.folder_name} (ID: {folder_id})\n')
             
             # Get all files
             files_stmt = select(FileRecord).where(FileRecord.folder_id == folder_id)
@@ -57,21 +67,60 @@ async def show_vector_store_contents():
                 db_chunk_count = chunk_count_result.scalar_one()
                 print(f'   Chunks in DB: {db_chunk_count}')
                 
-                # Get chunks from vector store
-                docs = await vector_store.similarity_search_with_score(
-                    query='document',
-                    k=100,  # Get up to 100 chunks
-                    filter={'folder_id': folder_id, 'file_id': file.file_id}
-                )
+                # Get chunks from vector store using get() method to avoid HNSW index issues
+                # This directly queries by metadata instead of using similarity search
+                try:
+                    chroma_collection = vector_store.vector_store._collection
+                    if hasattr(chroma_collection, 'get'):
+                        # Use get() method directly with where filter
+                        results = chroma_collection.get(
+                            where={"$and": [{"folder_id": folder_id}, {"file_id": file.file_id}]},
+                            include=['documents', 'metadatas']
+                        )
+                        
+                        # Convert to Document objects
+                        from langchain_core.documents import Document
+                        docs = []
+                        if results and "documents" in results and results["documents"]:
+                            for i, doc_text in enumerate(results["documents"]):
+                                metadata = {}
+                                if "metadatas" in results and results["metadatas"] and i < len(results["metadatas"]):
+                                    metadata = results["metadatas"][i]
+                                
+                                doc = Document(page_content=doc_text, metadata=metadata)
+                                docs.append((doc, 1.0))  # Use 1.0 as a placeholder score for get() method
+                        
+                        print(f'   Chunks in Vector Store (using get()): {len(docs)}')
+                    else:
+                        # Fallback to similarity_search if get() is not available
+                        docs = await vector_store.similarity_search_with_score(
+                            query='document',
+                            k=100,
+                            filter={'folder_id': folder_id, 'file_id': file.file_id}
+                        )
+                        print(f'   Chunks in Vector Store: {len(docs)}')
+                except Exception as e:
+                    print(f'   ⚠️  Error retrieving chunks: {str(e)}')
+                    docs = []
+                    print(f'   Chunks in Vector Store: 0')
                 
                 print(f'   Chunks in Vector Store: {len(docs)}')
                 
                 # Show first 3 chunks with full details
                 if docs:
-                    print(f'\n   Sample chunks (showing first 3):')
-                    for i, (doc, score) in enumerate(docs[:3], 1):
+                    print(f'\n   Sample chunks (showing first {min(3, len(docs))}):')
+                    for i, doc_tuple in enumerate(docs[:3], 1):
+                        # Handle both (doc, score) tuples and just doc objects
+                        if isinstance(doc_tuple, tuple) and len(doc_tuple) == 2:
+                            doc, score = doc_tuple
+                        else:
+                            doc = doc_tuple
+                            score = None
                         print(f'\n   Chunk {i}:')
-                        print(f'     Similarity Score: {score:.4f}')
+                        if score is not None:
+                            print(f'     Similarity Score: {score:.4f}')
+                        else:
+                            print(f'     Similarity Score: N/A (retrieved via get() method)')
                         print(f'     Chunk ID: {doc.metadata.get("chunk_id", "N/A")}')
                         print(f'     File ID: {doc.metadata.get("file_id", "N/A")}')
                         print(f'     File Name: {doc.metadata.get("file_name", "N/A")}')

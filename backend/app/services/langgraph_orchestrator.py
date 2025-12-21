@@ -109,6 +109,7 @@ class LangGraphOrchestrator:
         streaming_callback: Optional[Callable[[str], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         citations_callback: Optional[Callable[[list], None]] = None,
+        file_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process query with graph-enhanced RAG.
 
@@ -174,6 +175,7 @@ class LangGraphOrchestrator:
                     streaming_callback=streaming_callback,
                     status_callback=status_callback,
                     citations_callback=citations_callback,
+                    file_id=file_id,
                 )
             elif self.rag_service:
                 # Non-streaming: use RAG service
@@ -185,6 +187,7 @@ class LangGraphOrchestrator:
                     streaming_callback=None,
                     status_callback=None,
                     citations_callback=None,
+                    file_id=file_id,
                 )
 
             # Combine results (RAG service returns "answer", query_state might have "final_answer")

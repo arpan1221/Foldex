@@ -179,16 +179,21 @@ JSON only:"""
             
             # Clean up response (remove markdown code blocks if present)
             content_str = content_str.strip()
-            if content_str.startswith("```json"):
-                content_str = content_str[7:]
-            if content_str.startswith("```"):
-                content_str = content_str[3:]
-            if content_str.endswith("```"):
-                content_str = content_str[:-3]
-            content_str = content_str.strip()
+            
+            # Try to extract JSON from response (may be wrapped in markdown or have extra text)
+            json_text = self._extract_json_from_response(content_str)
+            
+            if not json_text:
+                # If no JSON found, return empty structure
+                logger.warning(
+                    "No JSON found in entity extraction response",
+                    file_name=file_name,
+                    response_preview=content_str[:200],
+                )
+                return {"entities": [], "relationships": []}
             
             # Parse JSON
-            graph_data = json.loads(content_str)
+            graph_data = json.loads(json_text)
             
             # Validate structure
             if not isinstance(graph_data, dict):
@@ -219,6 +224,42 @@ JSON only:"""
                 error=str(e),
             )
             return {"entities": [], "relationships": []}
+    
+    def _extract_json_from_response(self, text: str) -> Optional[str]:
+        """Extract JSON from LLM response (may be wrapped in markdown code blocks or have extra text).
+        
+        Args:
+            text: LLM response text
+            
+        Returns:
+            Extracted JSON string or None
+        """
+        import re
+        
+        # Try to find JSON code block first
+        json_block = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if json_block:
+            return json_block.group(1)
+        
+        # Try to find JSON object directly (look for balanced braces)
+        # Find the first { and try to find matching }
+        start_idx = text.find('{')
+        if start_idx != -1:
+            brace_count = 0
+            for i in range(start_idx, len(text)):
+                if text[i] == '{':
+                    brace_count += 1
+                elif text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found complete JSON object
+                        json_str = text[start_idx:i+1]
+                        # Validate it looks like JSON
+                        if json_str.strip().startswith('{') and json_str.strip().endswith('}'):
+                            return json_str
+                        break
+        
+        return None
     
     def _add_to_graph(self, file_name: str, graph_data: Dict[str, Any]):
         """Add entities and relationships to NetworkX graph.

@@ -34,14 +34,20 @@ async def show_top_chunks_per_file(top_n: int = 2):
     
     try:
         async with db_manager.get_session() as session:
-            # Get the most recent folder (or Test Folder)
-            stmt = select(FolderRecord).order_by(FolderRecord.created_at.desc()).limit(1)
+            # Get Test Folder by name
+            stmt = select(FolderRecord).where(FolderRecord.folder_name == "Test Folder")
             result = await session.execute(stmt)
             folder = result.scalar_one_or_none()
             
             if not folder:
-                print("❌ No folders found in database")
-                return
+                print('❌ "Test Folder" not found in database')
+                # Fallback to most recent folder
+                stmt = select(FolderRecord).order_by(FolderRecord.created_at.desc()).limit(1)
+                result = await session.execute(stmt)
+                folder = result.scalar_one_or_none()
+                if not folder:
+                    print("❌ No folders found in database")
+                    return
             
             folder_id = folder.folder_id
             folder_name = folder.folder_name

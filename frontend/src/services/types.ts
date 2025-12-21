@@ -87,6 +87,7 @@ export interface ChatRequest {
   query: string;
   folder_id?: string;
   conversation_id?: string;
+  file_id?: string;  // Optional file ID for file-specific chat
   debug?: boolean;
 }
 

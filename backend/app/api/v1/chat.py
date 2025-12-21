@@ -23,6 +23,7 @@ class ChatRequest(BaseModel):
     query: str
     folder_id: Optional[str] = None
     conversation_id: Optional[str] = None
+    file_id: Optional[str] = None  # Optional file ID for file-specific chat
 
 
 class Citation(BaseModel):
@@ -267,6 +268,7 @@ async def query_chat_stream(
                             folder_id=request.folder_id,
                             user_id=user_id,
                             conversation_id=request.conversation_id,
+                            file_id=request.file_id,
                             streaming_callback=stream_callback,
                             status_callback=status_callback,
                             citations_callback=citations_callback,
@@ -329,13 +331,14 @@ async def query_chat_stream(
                                     if i % 5 == 0:
                                         await asyncio.sleep(0.01)
 
-                            # Send citations only if not already sent early (as final fallback)
-                            # This ensures citations are always sent, even if early citation callback didn't fire
-                            if not citations_sent and citations:
-                                logger.info("Sending citations as fallback (not sent early)", citation_count=len(citations))
+                            # Always send citations at the end to ensure they're received
+                            # This is a safety mechanism - if early citations were sent, this will update them
+                            # If early citations weren't sent, this ensures they're still delivered
+                            if citations:
+                                logger.info("Sending final citations", citation_count=len(citations), already_sent=citations_sent)
                                 yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
                             elif citations_sent:
-                                logger.debug("Citations already sent early, skipping final send")
+                                logger.debug("Citations already sent early, but no final citations available")
 
                             # Send completion
                             done_data = {'type': 'done', 'conversation_id': conversation_id}
