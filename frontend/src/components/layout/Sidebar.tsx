@@ -35,6 +35,10 @@ const Sidebar: React.FC = () => {
   const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [creatingConversationId, setCreatingConversationId] = useState<string | null>(null);
+  const [folderSummaries, setFolderSummaries] = useState<Record<string, any>>({});
+  const [summarizingFolders, setSummarizingFolders] = useState<Set<string>>(new Set());
+  const [buildingGraphFolders, setBuildingGraphFolders] = useState<Set<string>>(new Set());
+  const pollIntervalsRef = React.useRef<Record<string, NodeJS.Timeout>>({});
 
   // Load folders on mount and when location changes (folder processed)
   useEffect(() => {
@@ -42,6 +46,91 @@ const Sidebar: React.FC = () => {
       loadFolders();
     }
   }, [isAuthenticated, location.pathname]);
+
+  // Listen for graph_complete custom events to update sidebar dynamically
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    // Handler to update folder summary when graph completes
+    const handleGraphCompleteEvent = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const folderId = customEvent.detail?.folder_id;
+      if (!folderId) return;
+
+      // Update folder summary to reflect graph completion
+      try {
+        const summary = await folderService.getFolderSummary(folderId);
+        setFolderSummaries(prev => ({
+          ...prev,
+          [folderId]: summary  // Store full summary object for consistency
+        }));
+        console.log('Graph completed, updated sidebar for folder:', folderId, summary.graph_statistics);
+        // Clear polling interval if it exists
+        if (pollIntervalsRef.current[`graph_${folderId}`]) {
+          clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
+          delete pollIntervalsRef.current[`graph_${folderId}`];
+        }
+        setBuildingGraphFolders(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(folderId);
+          return newSet;
+        });
+      } catch (err) {
+        console.debug('Failed to update folder summary after graph completion:', err);
+        setBuildingGraphFolders(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(folderId);
+          return newSet;
+        });
+      }
+    };
+
+    // Listen for custom graph_complete and summary_complete events
+    const handleSummaryCompleteEvent = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const folderId = customEvent.detail?.folder_id;
+      if (!folderId) return;
+
+      // Update folder summary and clear summarizing state
+      try {
+        const summary = await folderService.getFolderSummary(folderId);
+        setFolderSummaries(prev => ({
+          ...prev,
+          [folderId]: summary  // Store full summary object, not just graph_statistics
+        }));
+        console.log('Summary completed, updated sidebar for folder:', folderId);
+        // Clear polling interval if it exists
+        if (pollIntervalsRef.current[`summary_${folderId}`]) {
+          clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
+          delete pollIntervalsRef.current[`summary_${folderId}`];
+        }
+        // Clear summarizing state
+        setSummarizingFolders(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(folderId);
+          return newSet;
+        });
+      } catch (err) {
+        console.debug('Failed to update folder summary after completion:', err);
+        setSummarizingFolders(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(folderId);
+          return newSet;
+        });
+      }
+    };
+
+    window.addEventListener('graph_complete', handleGraphCompleteEvent);
+    window.addEventListener('summary_complete', handleSummaryCompleteEvent);
+
+    return () => {
+      window.removeEventListener('graph_complete', handleGraphCompleteEvent);
+      window.removeEventListener('summary_complete', handleSummaryCompleteEvent);
+      // Cleanup any polling intervals
+      Object.values(pollIntervalsRef.current).forEach(interval => clearInterval(interval));
+      pollIntervalsRef.current = {};
+    };
+  }, [isAuthenticated]);
 
   // Save sidebar width to localStorage
   useEffect(() => {
@@ -201,6 +290,150 @@ const Sidebar: React.FC = () => {
       
       // Always reload conversations when expanding
       loadFolderConversations(folderId);
+      
+      // Load folder summary to check if graph is available
+      if (!folderSummaries[folderId]) {
+        try {
+          const summary = await folderService.getFolderSummary(folderId);
+          setFolderSummaries(prev => ({
+            ...prev,
+            [folderId]: summary  // Store full summary object for consistency
+          }));
+        } catch (err) {
+          // Silently fail - graph might not be ready yet
+          console.debug('Could not load folder summary for graph check:', err);
+        }
+      }
+    }
+  };
+  
+  const handleGraphVisualization = (folderId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigate(`/graph/${folderId}`);
+  };
+
+  const handleSummarizeFolder = async (folderId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    setSummarizingFolders(prev => new Set(prev).add(folderId));
+    try {
+      await folderService.generateFolderSummary(folderId);
+      // Success - WebSocket will notify us when complete, but also poll as fallback
+      // Clear any existing polling interval for this folder
+      if (pollIntervalsRef.current[`summary_${folderId}`]) {
+        clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
+      }
+      // Poll for completion every 2 seconds for up to 60 seconds
+      let attempts = 0;
+      const maxAttempts = 30;
+      pollIntervalsRef.current[`summary_${folderId}`] = setInterval(async () => {
+        attempts++;
+        try {
+          const summary = await folderService.getFolderSummary(folderId);
+          // Check if summary is complete (has summary text or learning_status is complete)
+          if (summary.summary || summary.learning_status === 'learning_complete') {
+            setFolderSummaries(prev => ({
+              ...prev,
+              [folderId]: summary
+            }));
+            setSummarizingFolders(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(folderId);
+              return newSet;
+            });
+            if (pollIntervalsRef.current[`summary_${folderId}`]) {
+              clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
+              delete pollIntervalsRef.current[`summary_${folderId}`];
+            }
+          }
+        } catch (err) {
+          console.debug('Polling for summary completion:', err);
+        }
+        
+        if (attempts >= maxAttempts) {
+          // Stop polling after max attempts
+          if (pollIntervalsRef.current[`summary_${folderId}`]) {
+            clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
+            delete pollIntervalsRef.current[`summary_${folderId}`];
+          }
+          setSummarizingFolders(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(folderId);
+            return newSet;
+          });
+        }
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to start folder summarization:', err);
+      alert('Failed to start folder summarization. Please try again.');
+      setSummarizingFolders(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(folderId);
+        return newSet;
+      });
+    }
+  };
+
+
+  const handleBuildKnowledgeGraph = async (folderId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    setBuildingGraphFolders(prev => new Set(prev).add(folderId));
+    try {
+      await folderService.buildKnowledgeGraph(folderId);
+      // Success - WebSocket will notify us when complete, but also poll as fallback
+      // Clear any existing polling interval for this folder
+      if (pollIntervalsRef.current[`graph_${folderId}`]) {
+        clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
+      }
+      // Poll for completion every 2 seconds for up to 120 seconds (graph building can take longer)
+      let attempts = 0;
+      const maxAttempts = 60;
+      pollIntervalsRef.current[`graph_${folderId}`] = setInterval(async () => {
+        attempts++;
+        try {
+          const summary = await folderService.getFolderSummary(folderId);
+          // Check if graph is complete (has graph_statistics with node_count > 0)
+          if (summary.graph_statistics && summary.graph_statistics.node_count > 0) {
+            setFolderSummaries(prev => ({
+              ...prev,
+              [folderId]: summary
+            }));
+            setBuildingGraphFolders(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(folderId);
+              return newSet;
+            });
+            if (pollIntervalsRef.current[`graph_${folderId}`]) {
+              clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
+              delete pollIntervalsRef.current[`graph_${folderId}`];
+            }
+          }
+        } catch (err) {
+          console.debug('Polling for graph completion:', err);
+        }
+        
+        if (attempts >= maxAttempts) {
+          // Stop polling after max attempts
+          if (pollIntervalsRef.current[`graph_${folderId}`]) {
+            clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
+            delete pollIntervalsRef.current[`graph_${folderId}`];
+          }
+          setBuildingGraphFolders(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(folderId);
+            return newSet;
+          });
+        }
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to start knowledge graph build:', err);
+      alert('Failed to start knowledge graph build. Please try again.');
+      setBuildingGraphFolders(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(folderId);
+        return newSet;
+      });
     }
   };
 
@@ -574,23 +807,77 @@ const Sidebar: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Knowledge Graph Button */}
-                      <div className="pt-2 border-t border-gray-800">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/graph/${folder.folder_id}`);
-                          }}
-                          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-gray-400 hover:bg-gray-800/50 hover:text-purple-400 transition-all duration-200 group/kg"
-                          title="View Knowledge Graph"
-                        >
-                          <svg className="w-4 h-4 flex-shrink-0 text-gray-500 group-hover/kg:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                          </svg>
-                          <span className="text-sm font-medium">Knowledge Graph</span>
-                        </button>
-                      </div>
+                      {/* Folder Actions Section */}
+                      <div className="py-2 border-t border-gray-800 mt-2 space-y-1">
+                        <div className="px-2 mb-1">
+                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Actions</span>
+                        </div>
+                        
+                        {/* Summarize Folder Button - shows loading state during summarization */}
+                        {summarizingFolders.has(folder.folder_id) ? (
+                          <button
+                            disabled={true}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs font-medium text-blue-400 opacity-50 cursor-not-allowed"
+                            title="Summarizing folder contents..."
+                          >
+                            <svg className="w-3.5 h-3.5 flex-shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            <span>Summarizing...</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e) => handleSummarizeFolder(folder.folder_id, e)}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs font-medium text-blue-400 hover:bg-blue-600/20 hover:text-blue-300 transition-all duration-200"
+                            title={folderSummaries[folder.folder_id]?.summary ? "Regenerate folder summary" : "Summarize folder contents for general queries"}
+                          >
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span>Summarize folder contents</span>
+                          </button>
+                        )}
 
+                        {/* Build Knowledge Graph Button - transforms to Knowledge Graph button after build */}
+                        {folderSummaries[folder.folder_id]?.graph_statistics && folderSummaries[folder.folder_id].graph_statistics!.node_count > 0 ? (
+                          // Show "Knowledge Graph" button if graph exists
+                          <button
+                            onClick={(e) => handleGraphVisualization(folder.folder_id, e)}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs font-medium text-purple-400 hover:bg-purple-600/20 hover:text-purple-300 transition-all duration-200"
+                            title="Visualize Knowledge Graph"
+                          >
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                            </svg>
+                            <span>Knowledge Graph</span>
+                          </button>
+                        ) : (
+                          // Show "Build Knowledge Graph" button if graph doesn't exist
+                          <button
+                            onClick={(e) => handleBuildKnowledgeGraph(folder.folder_id, e)}
+                            disabled={buildingGraphFolders.has(folder.folder_id)}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs font-medium text-purple-400 hover:bg-purple-600/20 hover:text-purple-300 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Build knowledge graph for relations between documents"
+                          >
+                            {buildingGraphFolders.has(folder.folder_id) ? (
+                              <>
+                                <svg className="w-3.5 h-3.5 flex-shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                <span>Building graph...</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                                </svg>
+                                <span>Build knowledge graph</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      
                       {/* Files Section (Optional Toggle) */}
                       <div className="pt-2">
                         <div className="px-2 mb-1">

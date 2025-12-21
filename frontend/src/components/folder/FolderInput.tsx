@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFolderProcessor } from '../../hooks/useFolderProcessor';
 import { chatService, APIException } from '../../services/api';
@@ -19,6 +19,8 @@ const FolderInput: React.FC = () => {
   const [isValidating, setIsValidating] = useState(false);
   const [processedFolderId, setProcessedFolderId] = useState<string | null>(null);
   const { processFolder, isProcessing, status, error, files } = useFolderProcessor();
+  const navigationInitiatedRef = useRef<boolean>(false);
+  const navigationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Validate URL on change
   useEffect(() => {
@@ -34,29 +36,75 @@ const FolderInput: React.FC = () => {
     }
   }, [folderUrl, isValidating]);
 
-  // Auto-navigate to chat when processing and learning (summary) completes
+  // Show message when chunking completes - file-specific chat is now available
+  const [showChatAvailable, setShowChatAvailable] = useState(false);
+  
+  // Auto-navigate to chat when chunking completes
   useEffect(() => {
-    if (status?.type === 'summary_complete' && processedFolderId) {
-      console.log('Summary complete, will navigate in 1 second');
+    // Get folder ID - prefer processedFolderId, fallback to status.folder_id
+    const targetFolderId = processedFolderId || status?.folder_id;
 
-      // Wait 1 second to show completion state, then create conversation and navigate
-      const timer = setTimeout(async () => {
+    console.log('Navigation effect check:', {
+      statusType: status?.type,
+      processedFolderId,
+      statusFolderId: status?.folder_id,
+      targetFolderId,
+      navigationInitiated: navigationInitiatedRef.current,
+    });
+
+    if (
+      status?.type === 'processing_complete' && 
+      targetFolderId && 
+      !navigationInitiatedRef.current
+    ) {
+      console.log('✅ Navigation triggered - processing_complete detected');
+      navigationInitiatedRef.current = true;
+      setShowChatAvailable(true);
+      
+      // Update processedFolderId if it wasn't set
+      if (!processedFolderId && status.folder_id) {
+        setProcessedFolderId(status.folder_id);
+      }
+
+      // Clear any existing timer
+      if (navigationTimerRef.current) {
+        clearTimeout(navigationTimerRef.current);
+      }
+
+      // Navigate to chat after a short delay to show the success message
+      console.log('Setting navigation timer for folder:', targetFolderId);
+      navigationTimerRef.current = setTimeout(async () => {
         try {
-          console.log('Creating initial conversation for folder:', processedFolderId);
-          const newConv = await chatService.createConversation(processedFolderId, 'Initial Chat');
-          console.log('Navigating to chat:', processedFolderId, newConv.conversation_id);
-          navigate(`/chat/${processedFolderId}/${newConv.conversation_id}`);
+          console.log('Creating conversation for folder:', targetFolderId);
+          const newConv = await chatService.createConversation(targetFolderId, 'Initial Chat');
+          console.log('Conversation created, navigating to:', `/chat/${targetFolderId}/${newConv.conversation_id}`);
+          navigate(`/chat/${targetFolderId}/${newConv.conversation_id}`);
         } catch (err) {
           console.error('Failed to create initial conversation, navigating anyway:', err);
-          navigate(`/chat/${processedFolderId}`);
+          navigate(`/chat/${targetFolderId}`);
+        } finally {
+          navigationTimerRef.current = null;
         }
-      }, 1000);  // 1 second delay to show completion state
-
-      return () => clearTimeout(timer);
+      }, 2000);  // 2 second delay to show the success message, then auto-navigate
     }
-    // Only depend on status.type, not the entire status object to prevent timer resets
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.type, processedFolderId, navigate]);
+
+    // Cleanup on unmount
+    return () => {
+      if (navigationTimerRef.current) {
+        clearTimeout(navigationTimerRef.current);
+        navigationTimerRef.current = null;
+      }
+    };
+  }, [status?.type, status?.folder_id, processedFolderId, navigate]);
+
+  // Reset navigation flag when a new folder is processed
+  useEffect(() => {
+    if (processedFolderId && status?.type === 'processing_started') {
+      navigationInitiatedRef.current = false;
+      setShowChatAvailable(false);
+    }
+  }, [processedFolderId, status?.type]);
+
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -303,6 +351,44 @@ const FolderInput: React.FC = () => {
         {/* Processing Status - Floating Google Drive-like Interface */}
         {(isProcessing || status) && status && (
           <FolderUploadInterface status={status} error={error} />
+        )}
+
+        {/* Chat Available Message */}
+        {showChatAvailable && !isProcessing && (
+          <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 animate-fade-in">
+            <div className="flex items-center gap-3">
+              <svg
+                className="w-6 h-6 text-green-400 flex-shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <div className="flex-1">
+                <p className="text-green-300 font-medium">
+                  File-specific chat is now available!
+                </p>
+                <p className="text-green-400/80 text-sm mt-1">
+                  You can now chat with individual files. To ask general questions about the folder, use the "Summarize folder contents" button in the sidebar.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowChatAvailable(false)}
+                className="text-green-400 hover:text-green-300 transition-colors"
+                aria-label="Dismiss"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
         )}
 
         {/* File Overview */}

@@ -407,7 +407,21 @@ class FolderProcessor:
                 large_concurrent=2,
             )
             
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Gather all tasks - exceptions are returned as results, not raised
+            # This allows other files to continue processing even if one fails
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Log any exceptions that occurred (they're already handled in process_single_file)
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception):
+                    # This shouldn't happen since process_single_file catches all exceptions
+                    # But log it just in case
+                    logger.warning(
+                        "Unexpected exception in file processing task",
+                        task_index=idx,
+                        error_type=type(result).__name__,
+                        error=str(result),
+                    )
 
             # Send completion notification IMMEDIATELY after chunking
             # This allows users to start chatting right away
@@ -445,12 +459,9 @@ class FolderProcessor:
                         )
                     await asyncio.sleep(0.1)
 
-            # Start background learning task (knowledge graph + summarization)
-            # This runs asynchronously and doesn't block the pipeline
-            if processed_count > 0:
-                asyncio.create_task(
-                    self._background_learning_task(folder_id, user_id)
-                )
+            # Chunking complete - file-specific chat is now available
+            # Summarization and knowledge graph building are now user-initiated actions
+            # No automatic background tasks - users control when to run these
 
             # Update status in database
             await self._update_processing_status(
@@ -557,13 +568,10 @@ class FolderProcessor:
                     file_id, google_token, user_id, mime_type
                 )
 
-                # Process document with progress callback
-                def progress_callback(progress: float):
-                    # File-level progress can be sent here if needed
-                    pass
-
+                # Process document - no progress callback to avoid blocking WebSocket
+                # Progress is already tracked at file-level (file_processing/file_processed messages)
                 chunks = await self.doc_processor.process_file(
-                    file_path, file_info, progress_callback=progress_callback
+                    file_path, file_info, progress_callback=None
                 )
 
                 # Store in database
@@ -571,6 +579,7 @@ class FolderProcessor:
                 await self.db.store_chunks(chunks)
 
                 # Convert chunks to LangChain Documents and store in vector store
+                # Run vector store operations in background to avoid blocking progress updates
                 if LANGCHAIN_AVAILABLE and chunks:
                     documents = []
                     for chunk in chunks:
@@ -586,15 +595,37 @@ class FolderProcessor:
                         )
                         documents.append(doc)
                     
-                    # Add documents to vector store
-                    await self.vector_store.add_documents(documents)
-                    logger.debug(
-                        "Added documents to vector store",
-                        file_id=file_id,
-                        document_count=len(documents)
-                    )
+                    # Add documents to vector store in background (non-blocking)
+                    # This allows progress updates to continue immediately
+                    async def add_to_vector_store():
+                        try:
+                            await self.vector_store.add_documents(documents)
+                            logger.debug(
+                                "Added documents to vector store",
+                                file_id=file_id,
+                                document_count=len(documents)
+                            )
+                        except Exception as e:
+                            # Log error but don't crash - vector store is optional for progress
+                            logger.error(
+                                "Failed to add documents to vector store (non-fatal)",
+                                file_id=file_id,
+                                error=str(e),
+                                exc_info=True,
+                            )
+                        except BaseException as e:
+                            # Catch all exceptions including asyncio.CancelledError
+                            logger.warning(
+                                "Vector store background task cancelled or failed",
+                                file_id=file_id,
+                                error_type=type(e).__name__,
+                            )
+                    
+                    # Create background task (don't await - let it run in background)
+                    # Errors are handled internally and won't crash the main process
+                    asyncio.create_task(add_to_vector_store())
 
-                # Success - return
+                # Success - return immediately (vector store operations run in background)
                 return
 
             except Exception as e:

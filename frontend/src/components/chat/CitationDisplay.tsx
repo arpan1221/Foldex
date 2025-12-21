@@ -111,19 +111,6 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
     return parts.length > 0 ? parts.join(', ') : '';
   };
 
-  const getConfidenceColor = (confidence?: number): string => {
-    if (!confidence) return 'text-gray-500';
-    if (confidence >= 0.8) return 'text-green-400';
-    if (confidence >= 0.6) return 'text-yellow-400';
-    return 'text-orange-400';
-  };
-
-  const getConfidenceLabel = (confidence?: number): string => {
-    if (!confidence) return 'Unknown';
-    if (confidence >= 0.8) return 'High';
-    if (confidence >= 0.6) return 'Medium';
-    return 'Low';
-  };
 
   return (
     <div className="space-y-3 ml-1">
@@ -144,7 +131,6 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
           <div className="flex flex-wrap items-center gap-2">
             {typeCitations.map((citation, index) => {
           const location = formatLocation(citation);
-          const confidence = citation.quote_confidence ?? citation.confidence;
           const hasGranularData = citation.exact_quote || citation.context;
 
           return (
@@ -224,8 +210,10 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                   </span>
                 )}
                 
-                {(citation.start_time !== undefined || citation.end_time !== undefined) && (
-                  <button
+                {/* Show timestamp only for audio files */}
+                {(citation.start_time !== undefined || citation.end_time !== undefined) && 
+                 (citation.mime_type?.includes('audio') || citation.mime_type?.includes('video')) && (
+                  <span
                     onClick={(e) => {
                       e.stopPropagation();
                       // Could trigger audio playback at timestamp
@@ -233,20 +221,24 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                       const end = citation.end_time || start + 10;
                       console.log(`Play audio from ${formatTimestamp(start)} to ${formatTimestamp(end)}`);
                     }}
-                    className="text-xs text-foldex-primary-400 hover:text-foldex-primary-300 hover:underline"
+                    className="text-xs text-foldex-primary-400 hover:text-foldex-primary-300 hover:underline cursor-pointer"
                     title={`Jump to ${formatTimestamp(citation.start_time || 0)}`}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const start = citation.start_time || 0;
+                        const end = citation.end_time || start + 10;
+                        console.log(`Play audio from ${formatTimestamp(start)} to ${formatTimestamp(end)}`);
+                      }
+                    }}
                   >
                     {formatTimestamp(citation.start_time || 0)}
                     {citation.end_time && citation.end_time !== citation.start_time && (
                       <>-{formatTimestamp(citation.end_time)}</>
                     )}
-                  </button>
-                )}
-
-                {/* Confidence indicator */}
-                {confidence !== undefined && (
-                  <span className={`text-[10px] ${getConfidenceColor(confidence)}`}>
-                    {Math.round(confidence * 100)}%
                   </span>
                 )}
 
@@ -278,13 +270,6 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                           </div>
                         )}
                       </div>
-                      {confidence !== undefined && (
-                        <div className="text-[10px]">
-                          <span className={getConfidenceColor(confidence)}>
-                            {getConfidenceLabel(confidence)} ({Math.round(confidence * 100)}%)
-                          </span>
-                        </div>
-                      )}
                     </div>
 
                     {citation.exact_quote && (
@@ -312,7 +297,6 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
         <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4 space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
           {(() => {
             const citation = citations[expandedIndex];
-            const confidence = citation.quote_confidence ?? citation.confidence;
 
             return (
               <>
@@ -333,14 +317,6 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                     <div className="flex items-center gap-3 text-xs text-gray-400">
                       {formatLocation(citation) && (
                         <span>{formatLocation(citation)}</span>
-                      )}
-                      {confidence !== undefined && (
-                        <span className="flex items-center gap-1">
-                          <span className="text-gray-500">Confidence:</span>
-                          <span className={getConfidenceColor(confidence)}>
-                            {getConfidenceLabel(confidence)} ({Math.round(confidence * 100)}%)
-                          </span>
-                        </span>
                       )}
                     </div>
                   </div>

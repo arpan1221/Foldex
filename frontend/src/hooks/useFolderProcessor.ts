@@ -102,24 +102,83 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
             message: message.message || 'Processing completed successfully',
           });
 
-          // Don't set isProcessing to false yet - keep it true to allow learning messages
-          // The learning phase (summarization) happens after processing_complete
-          // Only set to false when learning is complete or fails
+          // IMPORTANT: Set isProcessing to false so navigation can happen immediately
+          // File chunking is complete - users can now chat with files
+          // Learning phase (summarization) happens in background and doesn't block navigation
+          setIsProcessing(false);
 
-          console.log('Processing completed', {
+          console.log('Processing completed - chunking done, ready for chat', {
             files_processed: message.files_processed,
             total_files: message.total_files,
           });
         } else if (message.type === 'summary_complete' || message.type === 'summary_error') {
           // Learning/summarization phase is complete
+          // IMPORTANT: Set isProcessing to false so navigation can happen
+          // Knowledge graph building happens in background and doesn't block
           setIsProcessing(false);
           
           // Update status with final learning status
           setStatus(newStatus);
           
+          // Dispatch custom event for summary_complete so sidebar and other components can update
+          if (message.type === 'summary_complete' && message.folder_id) {
+            window.dispatchEvent(new CustomEvent('summary_complete', {
+              detail: {
+                folder_id: message.folder_id,
+                summary_data: message.summary_data,
+              }
+            }));
+          }
+          
+          if (message.type === 'summary_error' && message.folder_id) {
+            window.dispatchEvent(new CustomEvent('summary_error', {
+              detail: {
+                folder_id: message.folder_id,
+                error: message.error,
+              }
+            }));
+          }
+          
           console.log('Folder learning completed', {
             type: message.type,
             summary_data: message.summary_data,
+          });
+        } else if (message.type === 'learning_started' || message.type === 'summary_progress') {
+          // Learning/summarization progress messages should NOT affect isProcessing state
+          // These are background tasks that don't block file-specific chatting
+          // Just update status for UI display, but keep isProcessing as-is
+          setStatus(newStatus);
+          
+          console.log('Learning/summarization status update (background)', {
+            type: message.type,
+          });
+        } else if (message.type === 'building_graph' || message.type === 'graph_complete' || message.type === 'graph_error') {
+          // Knowledge graph messages should NOT affect isProcessing state
+          // These are background tasks that don't block navigation
+          // Just update status for UI display, but keep isProcessing as-is
+          setStatus(newStatus);
+          
+          // Dispatch custom events for graph_complete so sidebar can update
+          if (message.type === 'graph_complete' && message.folder_id) {
+            window.dispatchEvent(new CustomEvent('graph_complete', {
+              detail: {
+                folder_id: message.folder_id,
+                graph_stats: message.graph_stats,
+              }
+            }));
+          }
+          
+          if (message.type === 'graph_error' && message.folder_id) {
+            window.dispatchEvent(new CustomEvent('graph_error', {
+              detail: {
+                folder_id: message.folder_id,
+                error: message.error,
+              }
+            }));
+          }
+          
+          console.log('Knowledge graph status update (background)', {
+            type: message.type,
           });
         } else if (message.type === 'processing_error') {
           setIsProcessing(false);

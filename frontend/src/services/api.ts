@@ -348,7 +348,7 @@ class FolderService {
   async getKnowledgeGraph(folderId: string): Promise<KnowledgeGraphResponse> {
     try {
       const response = await apiClient.get<KnowledgeGraphResponse>(
-        `/api/v1/folders/${folderId}/graph`
+        `/api/v1/knowledge-graph/graph/${folderId}`
       );
       return handleResponse(response);
     } catch (error) {
@@ -377,19 +377,47 @@ class FolderService {
   }
 
   /**
-   * Trigger folder summary regeneration.
+   * Generate folder summary (user-initiated).
    */
-  async regenerateFolderSummary(folderId: string): Promise<{ message: string; status: string }> {
+  async generateFolderSummary(folderId: string): Promise<{ message: string; status: string }> {
     try {
       const response = await apiClient.post<{ message: string; status: string }>(
-        `/api/v1/folders/${folderId}/summary/regenerate`
+        `/api/v1/folders/${folderId}/summary/generate`,
+        {},
+        { timeout: 120000 }  // 2 minute timeout for API call
       );
       return handleResponse(response);
     } catch (error) {
       if (error instanceof APIException) {
         throw error;
       }
-      throw new APIException('Failed to regenerate folder summary', undefined, undefined, { originalError: error });
+      throw new APIException('Failed to generate folder summary', undefined, undefined, { originalError: error });
+    }
+  }
+
+  /**
+   * Trigger folder summary regeneration (legacy, kept for backward compatibility).
+   */
+  async regenerateFolderSummary(folderId: string): Promise<{ message: string; status: string }> {
+    return this.generateFolderSummary(folderId);
+  }
+
+  /**
+   * Build knowledge graph for a folder (user-initiated).
+   */
+  async buildKnowledgeGraph(folderId: string): Promise<{ message: string; status: string }> {
+    try {
+      const response = await apiClient.post<{ message: string; status: string }>(
+        `/api/v1/knowledge-graph/${folderId}/build`,
+        {},
+        { timeout: 120000 }  // 2 minute timeout for API call
+      );
+      return handleResponse(response);
+    } catch (error) {
+      if (error instanceof APIException) {
+        throw error;
+      }
+      throw new APIException('Failed to build knowledge graph', undefined, undefined, { originalError: error });
     }
   }
 }

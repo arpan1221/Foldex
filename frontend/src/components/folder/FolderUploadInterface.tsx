@@ -42,6 +42,10 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
   const [backendTotalFiles, setBackendTotalFiles] = useState<number>(0);
   const [backendProcessedFiles, setBackendProcessedFiles] = useState<number>(0);
   const [backendFailedFiles, setBackendFailedFiles] = useState<number>(0);
+  // Track summarization status
+  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
+  const [summarizationProgress, setSummarizationProgress] = useState<number>(0);
+  const [summarizationMessage, setSummarizationMessage] = useState<string>('');
 
   // Update files and folders based on WebSocket messages
   useEffect(() => {
@@ -149,6 +153,40 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
         });
       }
 
+      // Handle summarization/learning status
+      if (status.type === 'learning_started') {
+        setIsSummarizing(true);
+        setSummarizationProgress(0);
+        setSummarizationMessage(status.message || 'Summarizing folder contents...');
+      }
+
+      if (status.type === 'summary_progress') {
+        setIsSummarizing(true);
+        if (status.progress !== undefined) {
+          setSummarizationProgress(status.progress);
+        }
+        if (status.message) {
+          setSummarizationMessage(status.message);
+        }
+      }
+
+      if (status.type === 'summary_complete') {
+        // Summarization is complete - navigation should happen now
+        // Knowledge graph building is separate background task
+        setIsSummarizing(false);
+        setSummarizationProgress(100);
+        setSummarizationMessage('');
+      }
+
+      if (status.type === 'summary_error') {
+        setIsSummarizing(false);
+        setSummarizationMessage('');
+      }
+
+      // Knowledge graph building messages are informational only
+      // They don't affect summarization state or block navigation
+      // (These are handled separately and don't change isSummarizing)
+
       // Handle folder_structure message with hierarchy
       if (status.type === 'folder_structure' && status.subfolders) {
         const folderMap = new Map<string, FolderItem>();
@@ -223,6 +261,7 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
   const processingFiles = Array.from(files.values()).filter(f => f.status === 'processing').length;
 
   const isComplete = status?.type === 'processing_complete' || (totalFiles > 0 && completedFiles + errorFiles === totalFiles);
+  const isFullyComplete = isComplete && !isSummarizing;
 
   const toggleFolder = (folderId: string) => {
     setExpandedFolders(prev => {
@@ -354,10 +393,10 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
             </svg>
             <div className="text-left">
               <div className="text-sm font-medium">
-                {isComplete ? 'Upload Complete' : 'Uploading...'}
+                {isFullyComplete ? 'Upload Complete' : isSummarizing ? 'Summarizing...' : 'Uploading...'}
               </div>
               <div className="text-xs text-gray-400">
-                {completedFiles} / {totalFiles} files
+                {isSummarizing ? summarizationMessage || 'Summarizing folder contents...' : `${completedFiles} / ${totalFiles} files`}
               </div>
             </div>
           </div>
@@ -371,13 +410,22 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-700 bg-gray-800">
         <div className="flex items-center gap-3">
-          <div className={`w-2 h-2 rounded-full ${isComplete ? 'bg-green-400' : 'bg-blue-400 animate-pulse'}`} />
+          <div className={`w-2 h-2 rounded-full ${
+            isFullyComplete ? 'bg-green-400' : 
+            isSummarizing ? 'bg-purple-400 animate-pulse' : 
+            'bg-blue-400 animate-pulse'
+          }`} />
           <div>
             <h3 className="text-sm font-semibold text-gray-100">
-              {isComplete ? 'Upload Complete' : 'Foldex is indexing your files'}
+              {isFullyComplete ? 'Upload Complete' : 
+               isSummarizing ? 'Summarizing folder contents' : 
+               'Foldex is indexing your files'}
             </h3>
             <p className="text-xs text-gray-400">
-              {completedFiles} of {totalFiles} files • {errorFiles > 0 ? `${errorFiles} failed` : 'No errors'}
+              {isSummarizing 
+                ? (summarizationMessage || 'Analyzing your folder...')
+                : `${completedFiles} of ${totalFiles} files • ${errorFiles > 0 ? `${errorFiles} failed` : 'No errors'}`
+              }
             </p>
           </div>
         </div>
@@ -412,20 +460,41 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
 
       {/* Progress Bar */}
       <div className="px-4 pt-3 pb-2 bg-gray-800">
-        <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-          <div
-            className={`h-full transition-all duration-300 ${
-              isComplete ? 'bg-green-500' : 'bg-blue-500'
-            }`}
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="flex justify-between items-center mt-2">
-          <span className="text-xs text-gray-400">{progress}% complete</span>
-          {processingFiles > 0 && (
-            <span className="text-xs text-blue-400">{processingFiles} processing</span>
-          )}
-        </div>
+        {isSummarizing ? (
+          <>
+            <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                className="h-full transition-all duration-300 bg-purple-500"
+                style={{ width: `${Math.max(summarizationProgress * 100, 10)}%` }}
+              />
+            </div>
+            <div className="flex justify-between items-center mt-2">
+              <span className="text-xs text-gray-400">
+                {summarizationMessage || 'Summarizing folder contents...'}
+              </span>
+              <span className="text-xs text-purple-400">
+                {Math.round(summarizationProgress * 100)}%
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  isComplete ? 'bg-green-500' : 'bg-blue-500'
+                }`}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <div className="flex justify-between items-center mt-2">
+              <span className="text-xs text-gray-400">{progress}% complete</span>
+              {processingFiles > 0 && (
+                <span className="text-xs text-blue-400">{processingFiles} processing</span>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* File List */}
@@ -466,7 +535,7 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
       )}
 
       {/* Footer */}
-      {isComplete && isExpanded && (
+      {isFullyComplete && isExpanded && (
         <div className="p-3 border-t border-gray-700 bg-gray-800">
           <div className="flex items-center justify-between">
             {errorFiles > 0 || backendFailedFiles > 0 ? (

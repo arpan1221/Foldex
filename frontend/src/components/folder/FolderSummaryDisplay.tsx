@@ -36,20 +36,31 @@ const FolderSummaryDisplay: React.FC<FolderSummaryDisplayProps> = ({ folderId })
     };
 
     loadSummary();
+
+    // Listen for summary_complete event to reload when summary becomes available
+    const handleSummaryComplete = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      if (customEvent.detail?.folder_id === folderId) {
+        console.log('Summary complete event received, reloading summary for folder:', folderId);
+        loadSummary();
+      }
+    };
+
+    window.addEventListener('summary_complete', handleSummaryComplete);
+
+    return () => {
+      window.removeEventListener('summary_complete', handleSummaryComplete);
+    };
   }, [folderId]);
 
-  // Don't render if no summary or still learning
-  if (!summary || summary.learning_status === 'learning_pending' || summary.learning_status === 'learning_in_progress') {
-    return null;
-  }
-
-  // Don't render if learning failed (user can still use the folder)
-  if (summary.learning_status === 'learning_failed') {
+  // Only render if learning is complete (i.e., summarization has been done)
+  // This ensures the Folder Knowledge tab only appears after user clicks "Summarize folder contents"
+  if (!summary || summary.learning_status !== 'learning_complete') {
     return null;
   }
 
   return (
-    <div className="bg-gray-800/50 border border-gray-700 rounded-lg mb-4">
+    <div className="bg-gray-800/50 border border-gray-700 rounded-lg mb-6">
       {/* Header - Always Visible */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
@@ -95,7 +106,7 @@ const FolderSummaryDisplay: React.FC<FolderSummaryDisplayProps> = ({ folderId })
 
       {/* Content - Collapsible */}
       {isExpanded && (
-        <div className="px-4 pb-4 space-y-4 border-t border-gray-700">
+        <div className="px-4 pt-4 pb-6 space-y-4 border-t border-gray-700 max-h-[60vh] overflow-y-auto custom-scrollbar">
           {/* Loading State */}
           {isLoading && (
             <div className="py-4 text-center text-gray-400">
@@ -201,66 +212,6 @@ const FolderSummaryDisplay: React.FC<FolderSummaryDisplayProps> = ({ folderId })
                       </li>
                     ))}
                   </ul>
-                </div>
-              )}
-
-              {/* Graph Statistics */}
-              {summary.graph_statistics && (
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-300 mb-2">Knowledge Graph</h4>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
-                    <div>
-                      <p className="text-gray-500">Nodes</p>
-                      <p className="text-gray-200 font-semibold">{summary.graph_statistics.node_count}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Edges</p>
-                      <p className="text-gray-200 font-semibold">{summary.graph_statistics.edge_count}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Relationships</p>
-                      <p className="text-gray-200 font-semibold">{summary.graph_statistics.relationship_types}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Entity Summary */}
-              {summary.entity_summary && (
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-300 mb-2">Key Entities</h4>
-                  <div className="space-y-2">
-                    {summary.entity_summary.top_entities && summary.entity_summary.top_entities.length > 0 && (
-                      <div>
-                        <p className="text-xs text-gray-500 mb-1">Most Mentioned</p>
-                        <div className="flex flex-wrap gap-2">
-                          {summary.entity_summary.top_entities.slice(0, 8).map((item, idx) => (
-                            <span
-                              key={idx}
-                              className="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded"
-                            >
-                              {item.entity} ({item.count})
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {summary.entity_summary.top_themes && summary.entity_summary.top_themes.length > 0 && (
-                      <div>
-                        <p className="text-xs text-gray-500 mb-1">Themes</p>
-                        <div className="flex flex-wrap gap-2">
-                          {summary.entity_summary.top_themes.slice(0, 6).map((item, idx) => (
-                            <span
-                              key={idx}
-                              className="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded"
-                            >
-                              {item.theme} ({item.count})
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
 

@@ -10,6 +10,8 @@ from app.database.sqlite_manager import SQLiteManager
 from app.services.folder_summarizer import get_folder_summarizer
 from app.core.exceptions import DatabaseError
 from app.config.settings import settings
+from sqlalchemy import select
+from app.models.database import FolderRecord
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/folders", tags=["folder-summary"])
@@ -106,16 +108,16 @@ async def get_folder_summary(
         )
 
 
-@router.post("/{folder_id}/summary/regenerate")
-async def regenerate_folder_summary(
+@router.post("/{folder_id}/summary/generate")
+async def generate_folder_summary(
     folder_id: str,
     background_tasks: BackgroundTasks,
     db: SQLiteManager = Depends(get_db),
 ) -> Dict[str, str]:
-    """Regenerate folder summary.
+    """Generate folder summary (user-initiated).
 
-    Useful if folder contents changed significantly or to update
-    the summary with improved algorithms.
+    This endpoint triggers folder summarization which enables general queries
+    across files. Summary generation may take over 1 minute for large folders.
 
     Args:
         folder_id: Folder ID
@@ -129,42 +131,46 @@ async def regenerate_folder_summary(
         HTTPException: If folder not found
 
     Example:
-        >>> POST /api/v1/folders/abc123/summary/regenerate
+        >>> POST /api/v1/folders/abc123/summary/generate
         {
-            "message": "Folder summary regeneration started",
+            "message": "Folder summary generation started",
             "folder_id": "abc123",
             "status": "learning_in_progress"
         }
     """
     try:
-        # Verify folder exists
-        folder = await db.get_folder(folder_id)
-        if not folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Folder not found",
-            )
+        # Verify folder exists by checking FolderRecord
+        async with db._get_db_manager().get_session() as session:
+            folder_stmt = select(FolderRecord).where(FolderRecord.folder_id == folder_id)
+            folder_result = await session.execute(folder_stmt)
+            folder = folder_result.scalar_one_or_none()
+            
+            if not folder:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Folder not found",
+                )
 
-        # Trigger regeneration in background
+        # Trigger summarization in background with extended timeout
         summarizer = get_folder_summarizer()
 
-        async def regenerate_task():
-            """Background task to regenerate summary."""
+        async def generate_task():
+            """Background task to generate summary."""
             try:
                 await summarizer.generate_folder_summary(
                     folder_id=folder_id, send_progress=True
                 )
             except Exception as e:
                 logger.error(
-                    "Background summary regeneration failed",
+                    "Background summary generation failed",
                     folder_id=folder_id,
                     error=str(e),
                 )
 
-        background_tasks.add_task(regenerate_task)
+        background_tasks.add_task(generate_task)
 
         return {
-            "message": "Folder summary regeneration started",
+            "message": "Folder summary generation started",
             "folder_id": folder_id,
             "status": "learning_in_progress",
         }
@@ -173,9 +179,9 @@ async def regenerate_folder_summary(
         raise
     except Exception as e:
         logger.error(
-            "Failed to regenerate folder summary", folder_id=folder_id, error=str(e)
+            "Failed to start folder summary generation", folder_id=folder_id, error=str(e)
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to regenerate folder summary: {str(e)}",
+            detail=f"Failed to start folder summary generation: {str(e)}",
         )

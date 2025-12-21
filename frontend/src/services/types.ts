@@ -334,7 +334,7 @@ export interface WebSocketMessage {
 }
 
 export interface ProcessingUpdateMessage extends WebSocketMessage {
-  type: 'processing_started' | 'file_processed' | 'processing_complete' | 'processing_error' | 'files_detected' | 'file_processing' | 'file_error' | 'building_graph' | 'graph_complete';
+  type: 'processing_started' | 'file_processed' | 'processing_complete' | 'processing_error' | 'files_detected' | 'file_processing' | 'file_error' | 'learning_started' | 'summary_progress' | 'summary_complete' | 'summary_error' | 'building_graph' | 'graph_complete';
   folder_id: string;
   message?: string;
   progress?: number;

@@ -11,6 +11,7 @@ import ProcessingStatus from '../folder/ProcessingStatus';
 import FolderSummaryDisplay from '../folder/FolderSummaryDisplay';
 import AIAssistantIcon from '../common/AIAssistantIcon';
 import FileBadge from '../common/FileBadge';
+import LearningNotification from '../common/LearningNotification';
 
 /**
  * ChatInterface Component
@@ -31,11 +32,11 @@ const ChatInterface: React.FC = () => {
   const [folderMetadata, setFolderMetadata] = useState<{ file_count: number } | null>(null);
   const [isInitialChat, setIsInitialChat] = useState(false);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(true);
+  const [isLearning, setIsLearning] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const isUserScrollingRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Check if user is near bottom of scroll (within 100px)
   const isNearBottom = (): boolean => {
@@ -160,6 +161,15 @@ const ChatInterface: React.FC = () => {
     
     return () => clearInterval(interval);
   }, [folderId, isProcessing, processingStatus]);
+
+  // Track learning state from processing status
+  useEffect(() => {
+    if (processingStatus?.type === 'learning_started' || processingStatus?.type === 'summary_progress') {
+      setIsLearning(true);
+    } else if (processingStatus?.type === 'summary_complete') {
+      setIsLearning(false);
+    }
+  }, [processingStatus?.type]);
 
   // Auto-scroll to bottom when new messages arrive (smart scroll)
   useEffect(() => {
@@ -339,6 +349,9 @@ const ChatInterface: React.FC = () => {
           fullScreen={false}
         />
       )}
+
+      {/* Learning Notification - Shows during background summarization */}
+      <LearningNotification isVisible={isLearning && !fileId} />
     </div>
   );
 };

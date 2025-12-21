@@ -5,10 +5,10 @@
  * between documents, entities, and concepts.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 
-interface Node {
+interface Node extends d3.SimulationNodeDatum {
   id: string;
   label: string;
   type: string;
@@ -38,10 +38,13 @@ interface KnowledgeGraphVizProps {
 
 export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphVizProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const simulationRef = useRef<d3.Simulation<Node, Link> | null>(null);
+  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
 
   useEffect(() => {
     if (!folderId) return;
@@ -86,10 +89,27 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove(); // Clear previous render
 
-    const width = 1000;
-    const height = 700;
+    // Get container dimensions
+    const container = containerRef.current;
+    const width = container ? container.clientWidth : 1000;
+    const height = container ? container.clientHeight : 700;
 
     svg.attr('width', width).attr('height', height);
+
+    // Create zoom behavior
+    const zoom = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4])
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+        setZoomLevel(event.transform.k);
+      });
+
+    zoomRef.current = zoom;
+    svg.call(zoom);
+
+    // Create container group for zoomable content
+    const g = svg.append('g');
 
     // Create color scale
     const colorScale = (type: string, nodeType: string) => {
@@ -124,20 +144,20 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
 
     simulationRef.current = simulation;
 
-    // Draw links
-    const link = svg
+    // Draw links (in dark mode)
+    const link = g
       .append('g')
       .attr('class', 'links')
       .selectAll('line')
       .data(graphData.links)
       .enter()
       .append('line')
-      .attr('stroke', '#999')
-      .attr('stroke-opacity', 0.6)
-      .attr('stroke-width', 2);
+      .attr('stroke', '#6b7280') // Gray for dark mode
+      .attr('stroke-opacity', 0.4)
+      .attr('stroke-width', 1.5);
 
-    // Draw nodes
-    const node = svg
+    // Draw nodes (with dark mode styling)
+    const node = g
       .append('g')
       .attr('class', 'nodes')
       .selectAll('circle')
@@ -146,10 +166,11 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
       .append('circle')
       .attr('r', (d) => radiusScale(d.node_type))
       .attr('fill', (d) => colorScale(d.type, d.node_type))
-      .attr('stroke', '#fff')
+      .attr('stroke', '#1f2937') // Dark gray border for dark mode
       .attr('stroke-width', 2)
       .style('cursor', 'pointer')
       .on('click', (event, d) => {
+        event.stopPropagation(); // Prevent zoom on click
         if (onEntityClick) {
           onEntityClick(d);
         }
@@ -158,6 +179,7 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
         d3
           .drag<SVGCircleElement, Node>()
           .on('start', (event, d) => {
+            event.sourceEvent.stopPropagation();
             if (!event.active) simulation.alphaTarget(0.3).restart();
             d.fx = d.x;
             d.fy = d.y;
@@ -173,8 +195,8 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
           })
       );
 
-    // Add labels
-    const label = svg
+    // Add labels (dark mode colors)
+    const label = g
       .append('g')
       .attr('class', 'labels')
       .selectAll('text')
@@ -182,27 +204,31 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
       .enter()
       .append('text')
       .text((d) => d.label.length > 20 ? d.label.substring(0, 20) + '...' : d.label)
-      .attr('font-size', 10)
+      .attr('font-size', 11)
       .attr('dx', 15)
       .attr('dy', 4)
-      .attr('fill', '#333')
-      .style('pointer-events', 'none');
+      .attr('fill', '#e5e7eb') // Light gray text for dark mode
+      .style('pointer-events', 'none')
+      .style('font-family', 'system-ui, -apple-system, sans-serif');
 
-    // Add tooltips
+    // Add tooltips (dark mode styling)
     const tooltip = d3
       .select('body')
       .append('div')
       .style('position', 'absolute')
-      .style('padding', '8px')
-      .style('background', 'rgba(0, 0, 0, 0.8)')
-      .style('color', 'white')
-      .style('border-radius', '4px')
+      .style('padding', '10px 12px')
+      .style('background', '#1f2937')
+      .style('color', '#e5e7eb')
+      .style('border', '1px solid #374151')
+      .style('border-radius', '6px')
       .style('font-size', '12px')
       .style('pointer-events', 'none')
-      .style('opacity', 0);
+      .style('opacity', 0)
+      .style('z-index', 1000)
+      .style('box-shadow', '0 4px 6px rgba(0, 0, 0, 0.3)');
 
     node
-      .on('mouseover', (event, d) => {
+      .on('mouseover', (_event, d) => {
         tooltip
           .style('opacity', 1)
           .html(`<strong>${d.label}</strong><br/>Type: ${d.type}`);
@@ -217,6 +243,7 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
       });
 
     // Update positions on simulation tick
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     simulation.on('tick', () => {
       link
         .attr('x1', (d) => (d.source as Node).x!)
@@ -228,6 +255,21 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
 
       label.attr('x', (d) => d.x!).attr('y', (d) => d.y!);
     });
+
+    // Initialize zoom to fit content
+    const bounds = g.node()?.getBBox();
+    if (bounds && bounds.width && bounds.height) {
+      const fullWidth = bounds.width;
+      const fullHeight = bounds.height;
+      const midX = bounds.x + fullWidth / 2;
+      const midY = bounds.y + fullHeight / 2;
+      const scale = Math.min(width / fullWidth, height / fullHeight, 1) * 0.9;
+      const translate = [width / 2 - scale * midX, height / 2 - scale * midY];
+      svg.call(
+        zoom.transform,
+        d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+      );
+    }
 
     // Cleanup on unmount
     return () => {
@@ -322,12 +364,83 @@ export function KnowledgeGraphViz({ folderId, onEntityClick }: KnowledgeGraphViz
         </div>
       </div>
 
-      <div className="border border-gray-700 rounded-lg overflow-hidden bg-white">
-        <svg ref={svgRef} className="w-full"></svg>
+      <div className="relative border border-gray-700 rounded-lg overflow-hidden bg-gray-900">
+        {/* Zoom Controls */}
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2">
+          <button
+            onClick={() => {
+              if (svgRef.current && zoomRef.current) {
+                d3.select(svgRef.current).transition().call(
+                  zoomRef.current.scaleBy,
+                  1.2
+                );
+              }
+            }}
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-600 transition-colors"
+            title="Zoom In"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              if (svgRef.current && zoomRef.current) {
+                d3.select(svgRef.current).transition().call(
+                  zoomRef.current.scaleBy,
+                  1 / 1.2
+                );
+              }
+            }}
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-600 transition-colors"
+            title="Zoom Out"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              if (svgRef.current && zoomRef.current && graphData) {
+                const svgEl = svgRef.current;
+                const width = svgEl.clientWidth || 1000;
+                const height = svgEl.clientHeight || 700;
+                const bounds = { x: -width/4, y: -height/4, width: width*1.5, height: height*1.5 };
+                const fullWidth = bounds.width;
+                const fullHeight = bounds.height;
+                const midX = bounds.x + fullWidth / 2;
+                const midY = bounds.y + fullHeight / 2;
+                const scale = Math.min(width / fullWidth, height / fullHeight, 1) * 0.9;
+                const translate = [width / 2 - scale * midX, height / 2 - scale * midY];
+                d3.select(svgEl).transition().duration(750).call(
+                  zoomRef.current.transform,
+                  d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+                );
+              }
+            }}
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg border border-gray-600 transition-colors"
+            title="Fit to Screen"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Zoom Level Display */}
+        {zoomLevel !== 1 && (
+          <div className="absolute top-4 left-4 z-10 px-3 py-1 bg-gray-800 text-gray-300 text-xs rounded-lg border border-gray-600">
+            {Math.round(zoomLevel * 100)}%
+          </div>
+        )}
+
+        <div ref={containerRef} className="w-full h-[700px]">
+          <svg ref={svgRef} className="w-full h-full cursor-move"></svg>
+        </div>
       </div>
 
-      <div className="mt-4 text-xs text-gray-500">
-        <p>Click and drag nodes to reposition. Click on nodes to view details.</p>
+      <div className="mt-4 text-xs text-gray-400">
+        <p>Click and drag nodes to reposition. Use mouse wheel or buttons to zoom. Click on nodes to view details.</p>
       </div>
     </div>
   );

@@ -180,11 +180,16 @@ class FolderSummarizer:
                     )
 
             # Step 5: Generate master summary (90% progress)
-            # Use lightweight LLM (llama3.2:1b) for fast summary generation
-            top_entities = [e["entity"] for e in entity_summary.get("top_entities", [])[:5]]
-            master_summary = await self._generate_lightweight_summary(
-                file_inventory, top_entities, include_subfolder_info=True
+            # Use comprehensive LLM summary that includes cross-file similarities
+            master_summary_raw = await self._generate_master_summary(
+                folder_id,
+                file_inventory,
+                file_summaries,
+                entity_summary,
+                relationship_summary,
             )
+            # Post-process summary to clean up formatting and remove redundant content
+            master_summary = self._cleanup_summary(master_summary_raw)
             if send_progress:
                 try:
                     await manager.send_message(
@@ -236,12 +241,9 @@ class FolderSummarizer:
 
             # Update learning status
             await self.db.update_folder_learning_status(folder_id, "learning_complete")
-            
-            # Build knowledge graph in background (non-blocking)
-            # This runs asynchronously and doesn't block the response
-            asyncio.create_task(self._build_knowledge_graph_background(folder_id, summary_data))
 
-            # Send completion message
+            # Send completion message IMMEDIATELY (before starting background tasks)
+            # This ensures the frontend can navigate to chat right away
             if send_progress:
                 try:
                     await manager.send_message(
@@ -258,13 +260,18 @@ class FolderSummarizer:
                             },
                         },
                     )
-                    logger.debug("Sent summary_complete WebSocket message", folder_id=folder_id)
+                    logger.info("Sent summary_complete WebSocket message", folder_id=folder_id)
                 except Exception as e:
-                    logger.warning(
+                    logger.error(
                         "Failed to send summary_complete WebSocket message",
                         folder_id=folder_id,
                         error=str(e),
+                        error_type=type(e).__name__,
                     )
+            
+            # Knowledge graph building is now user-initiated only
+            # Users click "Build knowledge graph" button in sidebar to trigger it
+            # No automatic background building after summarization
 
             total_elapsed = time.time() - total_start
             logger.info(
@@ -376,7 +383,7 @@ class FolderSummarizer:
             Specific file type category
         """
         mime_lower = mime_type.lower()
-        
+
         # Check file extension if mime type is too generic
         if file_name:
             file_name_lower = file_name.lower()
@@ -475,117 +482,180 @@ class FolderSummarizer:
                 
                 if not file_id or file_id not in file_ids or not content:
                     continue
-                
+                    
                 # Initialize if needed
                 if file_id not in chunks_by_file:
                     chunks_by_file[file_id] = []
                     chunk_counts_by_file[file_id] = 0
-                
+                    
                 # Use up to 3 chunks per file (increased from 2 for better context)
                 # This ensures we capture more content from each file
                 if chunk_counts_by_file[file_id] < 3:
                     chunks_by_file[file_id].append(content)
                     chunk_counts_by_file[file_id] += 1
 
-            # Generate summaries from grouped chunks using lightweight LLM
-            # Ensure EVERY file gets a summary (even if no chunks found)
+            # Prepare file data for batch summarization
+            # Build structured file information for single LLM call
+            file_data_list = []
+            file_type_descriptions = {
+                "CSV": "CSV data file",
+                "TSV": "TSV data file",
+                "PDF": "PDF document",
+                "Markdown": "Markdown file",
+                "Text": "text file",
+                "Code": "code file",
+                "Document": "document",
+                "Spreadsheet": "spreadsheet",
+                "HTML": "HTML file",
+                "Data": "data file",
+                "Audio": "audio file",
+                "Image": "image file",
+            }
+            
             for file_id, file_info in file_ids.items():
                 chunks = chunks_by_file.get(file_id, [])
                 
-                # If no chunks found, create a simple summary based on file type and name
-                if not chunks:
-                    file_type_desc = file_info['file_type'].lower()
-                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file in this folder."
-                    summaries.append({
-                        "file_id": file_id,
-                        "file_name": file_info["file_name"],
-                        "file_type": file_info["file_type"],
-                        "summary": summary_text,
-                    })
-                    continue
-
-                # Combine chunks intelligently - use up to 800 chars for better context
-                # This allows for more comprehensive file summaries
-                combined_content = " ".join(chunks)[:800].strip()
+                # Combine chunks - use up to 800 chars per file for context
+                combined_content = " ".join(chunks)[:800].strip() if chunks else ""
                 
-                if not combined_content:
-                    continue
-
-                # Generate summary using lightweight LLM
-                try:
-                    # Create a more descriptive prompt that guides the LLM better
-                    file_type_description = {
-                        "CSV": "CSV data file",
-                        "TSV": "TSV data file",
-                        "PDF": "PDF document",
-                        "Markdown": "Markdown file",
-                        "Text": "text file",
-                        "Code": "code file",
-                        "Document": "document",
-                        "Spreadsheet": "spreadsheet",
-                        "HTML": "HTML file",
-                        "Data": "data file",
-                        "Audio": "audio file",
-                        "Image": "image file",
-                    }.get(file_info['file_type'], file_info['file_type'].lower() + " file")
-                    
-                    summary_prompt = f"""File: {file_info['file_name']} ({file_type_description}).
-
-Content preview:
-{combined_content}
-
-Provide a one-sentence summary describing what this file contains or discusses:"""
-                    
-                    response = await asyncio.wait_for(
-                        self.lightweight_llm.ainvoke(summary_prompt),
-                        timeout=6.0  # Increased timeout for more reliable completion
-                    )
-                    summary_text = response.content.strip() if hasattr(response, "content") else str(response).strip()
-                    
-                    # Clean up summary (remove quotes, prefixes like "Summary:", etc.)
-                    summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
-                    summary_text = summary_text.strip('"\'')
-                    
-                    if not summary_text or len(summary_text) < 10:
-                        # Fallback: create a simple descriptive summary
-                        preview = combined_content[:100].replace('\n', ' ').strip()
-                        summary_text = f"{file_info['file_name']} contains {file_type_description.lower()} content: {preview}..."
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "LLM summary generation timed out for file, using fallback",
-                        file_id=file_id,
-                        file_name=file_info["file_name"],
-                        timeout_seconds=6.0
-                    )
-                    # Fallback: create a descriptive summary from content
-                    preview = combined_content[:100].replace('\n', ' ').strip()
-                    file_type_desc = file_info['file_type'].lower()
-                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file containing: {preview}..."
-                except Exception as e:
-                    error_msg = str(e) if str(e) else f"{type(e).__name__}"
-                    logger.warning(
-                        "Failed to generate LLM summary for file, using fallback",
-                        file_id=file_id,
-                        file_name=file_info["file_name"],
-                        error=error_msg,
-                        error_type=type(e).__name__,
-                        exc_info=False  # Don't log full traceback for expected fallbacks
-                    )
-                    # Fallback: create a descriptive summary from content
-                    preview = combined_content[:100].replace('\n', ' ').strip()
-                    file_type_desc = file_info['file_type'].lower()
-                    summary_text = f"{file_info['file_name']} is a {file_type_desc} file containing: {preview}..."
-
-                summaries.append({
+                file_type_desc = file_type_descriptions.get(
+                    file_info['file_type'], 
+                    file_info['file_type'].lower() + " file"
+                )
+                
+                file_data_list.append({
                     "file_id": file_id,
                     "file_name": file_info["file_name"],
                     "file_type": file_info["file_type"],
+                    "file_type_desc": file_type_desc,
+                    "content": combined_content,
+                    "has_content": bool(combined_content),
+                })
+            
+            # Generate all summaries in a single batch LLM call
+            try:
+                # Build batch prompt with all files
+                batch_prompt_parts = [
+                    "Summarize each file below in exactly two sentences per file.",
+                    "",
+                    "For each file, provide:",
+                    "- First sentence: Describe what this file contains or discusses",
+                    "- Second sentence: State the main purpose, key information, or focus of this file",
+                    "- Be specific and factual about actual content",
+                    "- Avoid vague phrases like 'contains information' or 'is about various topics'",
+                    "",
+                    "Format your response as:",
+                    "FILE: <file_name>",
+                    "SUMMARY: <two-sentence summary>",
+                    "",
+                    "Files to summarize:",
+                    "",
+                ]
+                
+                # Add each file to the prompt
+                for idx, file_data in enumerate(file_data_list, 1):
+                    batch_prompt_parts.append(f"--- File {idx} ---")
+                    batch_prompt_parts.append(f"File Name: {file_data['file_name']}")
+                    batch_prompt_parts.append(f"File Type: {file_data['file_type_desc']}")
+                    if file_data['has_content']:
+                        batch_prompt_parts.append(f"Content Preview: {file_data['content']}")
+                    else:
+                        batch_prompt_parts.append("Content Preview: [No content extracted]")
+                    batch_prompt_parts.append("")
+                
+                batch_prompt_parts.append("Now provide summaries for each file in the format specified above:")
+                batch_prompt = "\n".join(batch_prompt_parts)
+                
+                # Call LLM once for all files
+                logger.info(
+                    "Generating batch file summaries",
+                    folder_id=folder_id,
+                    file_count=len(file_data_list),
+                )
+                
+                response = await asyncio.wait_for(
+                    self.lightweight_llm.ainvoke(batch_prompt),
+                    timeout=90.0  # Extended timeout (> 1 minute) for batch processing
+                )
+                response_text = response.content.strip() if hasattr(response, "content") else str(response).strip()
+                
+                # Parse batch response to extract individual summaries
+                parsed_summaries = self._parse_batch_summaries(response_text, file_data_list)
+                
+                # Use parsed summaries, fallback to generated ones for missing files
+                for file_data in file_data_list:
+                    file_id = file_data["file_id"]
+                    parsed_summary = parsed_summaries.get(file_id)
+                    
+                    if parsed_summary:
+                        summary_text = parsed_summary
+                    elif file_data["has_content"]:
+                        # Fallback: create a two-sentence descriptive summary from content
+                        preview = file_data["content"][:100].replace('\n', ' ').strip()
+                        summary_text = f"{file_data['file_name']} is a {file_data['file_type_desc'].lower()} containing relevant content. The file includes: {preview}..."
+                    else:
+                        # No content available
+                        file_type_desc = file_data['file_type'].lower()
+                        summary_text = f"{file_data['file_name']} is a {file_type_desc} file in this folder. The file's content could not be extracted for summarization."
+
+                summaries.append({
+                    "file_id": file_id,
+                        "file_name": file_data["file_name"],
+                        "file_type": file_data["file_type"],
+                        "summary": summary_text,
+                    })
+                    
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Batch LLM summary generation timed out, using fallbacks",
+                    folder_id=folder_id,
+                    file_count=len(file_data_list),
+                    timeout_seconds=90.0  # Extended timeout (> 1 minute)
+                )
+                # Fallback: create simple summaries for all files
+                for file_data in file_data_list:
+                    if file_data["has_content"]:
+                        preview = file_data["content"][:100].replace('\n', ' ').strip()
+                        summary_text = f"{file_data['file_name']} is a {file_data['file_type_desc'].lower()} file with content relevant to the folder. The file contains: {preview}..."
+                    else:
+                        file_type_desc = file_data['file_type'].lower()
+                        summary_text = f"{file_data['file_name']} is a {file_type_desc} file in this folder. The file's content could not be extracted for summarization."
+                    
+                    summaries.append({
+                        "file_id": file_data["file_id"],
+                        "file_name": file_data["file_name"],
+                        "file_type": file_data["file_type"],
+                        "summary": summary_text,
+                    })
+            except Exception as e:
+                error_msg = str(e) if str(e) else f"{type(e).__name__}"
+                logger.warning(
+                    "Batch LLM summary generation failed, using fallbacks",
+                    folder_id=folder_id,
+                    file_count=len(file_data_list),
+                    error=error_msg,
+                    error_type=type(e).__name__,
+                    exc_info=False
+                )
+                # Fallback: create simple summaries for all files
+                for file_data in file_data_list:
+                    if file_data["has_content"]:
+                        preview = file_data["content"][:100].replace('\n', ' ').strip()
+                        summary_text = f"{file_data['file_name']} is a {file_data['file_type_desc'].lower()} file with content relevant to the folder. The file contains: {preview}..."
+                    else:
+                        file_type_desc = file_data['file_type'].lower()
+                        summary_text = f"{file_data['file_name']} is a {file_type_desc} file in this folder. The file's content could not be extracted for summarization."
+                    
+                    summaries.append({
+                        "file_id": file_data["file_id"],
+                        "file_name": file_data["file_name"],
+                        "file_type": file_data["file_type"],
                     "summary": summary_text,
                 })
             
             elapsed = time.time() - start_time
             logger.info(
-                "File summaries generated",
+                "File summaries generated (batch mode)",
                 folder_id=folder_id,
                 summary_count=len(summaries),
                 elapsed_seconds=round(elapsed, 2),
@@ -600,6 +670,137 @@ Provide a one-sentence summary describing what this file contains or discusses:"
             )
 
         return summaries
+
+    def _parse_batch_summaries(self, response_text: str, file_data_list: List[Dict[str, Any]]) -> Dict[str, str]:
+        """Parse batch LLM response to extract individual file summaries.
+        
+        Args:
+            response_text: Raw LLM response containing multiple file summaries
+            file_data_list: List of file data dictionaries with file_id and file_name
+            
+        Returns:
+            Dictionary mapping file_id to summary text
+        """
+        parsed = {}
+        
+        if not response_text:
+            return parsed
+        
+        # Create mapping of file names to file IDs for lookup
+        name_to_id = {data["file_name"]: data["file_id"] for data in file_data_list}
+        
+        # Try to parse structured format: "FILE: <name>" followed by "SUMMARY: <text>"
+        lines = response_text.split('\n')
+        current_file_name = None
+        current_summary_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                # Empty line - if we have accumulated summary, save it
+                if current_file_name and current_summary_lines:
+                    summary_text = ' '.join(current_summary_lines).strip()
+                    if summary_text and current_file_name in name_to_id:
+                        file_id = name_to_id[current_file_name]
+                        # Clean up summary (remove quotes, prefixes, etc.)
+                        summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = summary_text.strip('"\'')
+                        if summary_text:
+                            parsed[file_id] = summary_text
+                    current_file_name = None
+                    current_summary_lines = []
+                continue
+            
+            # Check for "FILE:" marker
+            if line.upper().startswith('FILE:'):
+                # Save previous summary if exists
+                if current_file_name and current_summary_lines:
+                    summary_text = ' '.join(current_summary_lines).strip()
+                    if summary_text and current_file_name in name_to_id:
+                        file_id = name_to_id[current_file_name]
+                        summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = summary_text.strip('"\'')
+                        if summary_text:
+                            parsed[file_id] = summary_text
+                
+                # Extract file name (remove "FILE:" prefix and clean)
+                file_name_part = line[5:].strip().strip(':').strip()
+                # Try to match against known file names (fuzzy match)
+                for known_name in name_to_id.keys():
+                    if file_name_part.lower() in known_name.lower() or known_name.lower() in file_name_part.lower():
+                        current_file_name = known_name
+                        break
+                else:
+                    # Exact match or try first word
+                    current_file_name = file_name_part.split()[0] if file_name_part else None
+                current_summary_lines = []
+            
+            # Check for "SUMMARY:" marker
+            elif line.upper().startswith('SUMMARY:'):
+                summary_part = line[8:].strip()
+                if summary_part:
+                    current_summary_lines.append(summary_part)
+            
+            # Accumulate summary lines (content after FILE: or SUMMARY: markers)
+            elif current_file_name:
+                current_summary_lines.append(line)
+        
+        # Handle last summary if response ends without empty line
+        if current_file_name and current_summary_lines:
+            summary_text = ' '.join(current_summary_lines).strip()
+            if summary_text and current_file_name in name_to_id:
+                file_id = name_to_id[current_file_name]
+                summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                summary_text = summary_text.strip('"\'')
+                if summary_text:
+                    parsed[file_id] = summary_text
+        
+        # If structured parsing didn't work well, try alternative patterns
+        # Look for patterns like "filename: summary" or numbered lists
+        if len(parsed) < len(file_data_list) * 0.5:  # Less than 50% parsed
+            logger.debug(
+                "Structured parsing yielded few results, trying alternative patterns",
+                parsed_count=len(parsed),
+                total_files=len(file_data_list),
+            )
+            # Alternative: look for file names in text followed by summaries
+            for file_data in file_data_list:
+                if file_data["file_id"] in parsed:
+                    continue  # Already parsed
+                
+                file_name = file_data["file_name"]
+                # Try to find file name in response
+                name_pos = response_text.find(file_name)
+                if name_pos != -1:
+                    # Extract text after file name (next 200 chars or until next file name/newline)
+                    excerpt_start = name_pos + len(file_name)
+                    excerpt_end = excerpt_start + 300
+                    # Find next file name or end of response
+                    for other_data in file_data_list:
+                        if other_data["file_id"] != file_data["file_id"]:
+                            other_pos = response_text.find(other_data["file_name"], excerpt_start)
+                            if other_pos != -1 and other_pos < excerpt_end:
+                                excerpt_end = other_pos
+                    
+                    excerpt = response_text[excerpt_start:excerpt_end].strip()
+                    # Clean up excerpt
+                    excerpt = re.sub(r'^(Summary|File|This file|:|-)\s*', '', excerpt, flags=re.IGNORECASE).strip()
+                    # Take first two sentences if available
+                    sentences = re.split(r'[.!?]+', excerpt)
+                    if len(sentences) >= 2:
+                        summary_text = '. '.join(sentences[:2]).strip()
+                        if summary_text:
+                            summary_text = summary_text.strip('"\'')
+                            if len(summary_text) > 20:  # Valid summary
+                                parsed[file_data["file_id"]] = summary_text
+        
+        logger.debug(
+            "Parsed batch summaries",
+            parsed_count=len(parsed),
+            total_files=len(file_data_list),
+        )
+        
+        return parsed
 
     async def _extract_entity_summary(self, folder_id: str) -> Dict[str, Any]:
         """Extract top entities and themes from folder chunks.
@@ -878,13 +1079,62 @@ One sentence summary:"""
             f"{count} {ftype}" for ftype, count in file_inventory['type_distribution'].items()
         ])
 
-        # OPTIMIZED: Use shorter, more focused prompt for faster LLM response
-        # Limit file list to 10 files to reduce prompt size
-        limited_file_list = ", ".join([
-            f['file_name'] for f in file_inventory["files"][:10]
-        ])
+        # Build comprehensive file summary list - include all files with their summaries
+        # Ensure the master summary mentions each file at least once
+        file_summary_lines = []
+        for file_summary in file_summaries:
+            file_summary_lines.append(f"- {file_summary['file_name']}: {file_summary['summary']}")
         
-        master_prompt = f"""Summarize this folder ({file_inventory['total_files']} files, types: {type_summary}) in 2-3 sentences. Files: {limited_file_list}
+        # If we have too many files, include at least the first 15 files with summaries
+        if len(file_summary_lines) > 15:
+            file_summary_text = "\n".join(file_summary_lines[:15])
+            remaining_count = len(file_summary_lines) - 15
+            file_summary_text += f"\n... and {remaining_count} more files."
+        else:
+            file_summary_text = "\n".join(file_summary_lines)
+        
+        # Build relationship summary text for context
+        relationship_text = ""
+        if relationship_summary and len(relationship_summary) > 0:
+            relationship_lines = []
+            for rel in relationship_summary[:5]:  # Top 5 relationships
+                relationship_lines.append(
+                    f"- {rel.get('source_file', 'File')} and {rel.get('target_file', 'File')} "
+                    f"share {rel.get('relationship_type', 'content similarity')} "
+                    f"(confidence: {rel.get('confidence', 0):.0%})"
+                )
+            relationship_text = "\n\nCross-file Relationships:\n" + "\n".join(relationship_lines)
+        
+        # Build entity/themes summary for context
+        themes_text = ""
+        if entity_summary and entity_summary.get('top_themes'):
+            themes = [t.get('theme', '') for t in entity_summary['top_themes'][:5]]
+            themes_text = f"\n\nCommon Themes Across Files: {', '.join(themes)}"
+        
+        master_prompt = f"""Create a comprehensive folder summary that enables users to understand the folder contents and answer comparative queries like "are there similarities across files?"
+
+Folder Context:
+- Total Files: {file_inventory['total_files']}
+- File Types: {type_summary}
+{themes_text}
+{relationship_text}
+
+Individual Files:
+{file_summary_text}
+
+Write a comprehensive summary (2-3 paragraphs) that:
+1. Provides an overview of the folder's overall purpose and scope
+2. Mentions each file and its contribution to the folder
+3. **CRITICAL: Explicitly identify and describe similarities, common themes, and connections across multiple files** - this is essential for answering queries about cross-file similarities
+4. Highlight key relationships between files (use the relationship data provided above)
+5. Summarize the collective knowledge, theme, or domain of the folder
+
+IMPORTANT: The summary MUST include explicit statements about:
+- What themes, topics, or concepts appear across multiple files
+- How files relate to each other (similarities, differences, complementary content)
+- Any common entities, methods, or concepts that span multiple files
+
+This enables accurate answers to queries like "are there similarities across the files in the folder?"
 
 Summary:"""
 
@@ -892,7 +1142,7 @@ Summary:"""
             # Use timeout to prevent hanging
             response = await asyncio.wait_for(
                 self.llm.get_llm().ainvoke(master_prompt),
-                timeout=30.0  # 30 second timeout
+                timeout=90.0  # Extended timeout (> 1 minute)
             )
             summary = response.content if hasattr(response, "content") else str(response)
             summary_text = summary.strip()
@@ -909,6 +1159,120 @@ Summary:"""
             logger.error("Failed to generate master summary", folder_id=folder_id, error=str(e))
             # Return fallback summary
             return f"This folder contains {file_inventory['total_files']} documents including {type_summary}."
+
+    def _cleanup_summary(self, summary: str) -> str:
+        """Post-process summary text to improve readability and remove redundant content.
+        
+        Args:
+            summary: Raw summary text from LLM
+            
+        Returns:
+            Cleaned summary text
+        """
+        if not summary:
+            return summary
+        
+        text = summary.strip()
+        
+        # Remove common markdown headers/prefixes that add no value
+        prefixes_to_remove = [
+            r'^\*\*Folder Summary:\*\*\s*',
+            r'^Folder Summary:\s*',
+            r'^\*\*Summary:\*\*\s*',
+            r'^Summary:\s*',
+            r'^##\s+Summary\s*',
+            r'^#\s+Summary\s*',
+        ]
+        for pattern in prefixes_to_remove:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+        
+        # Remove excessive markdown formatting
+        # Replace multiple asterisks with nothing (preserve single asterisks for emphasis)
+        text = re.sub(r'\*\*\*\*+', '', text)
+        
+        # Clean up bullet point formatting issues
+        # Normalize bullet points (handle both - and *)
+        text = re.sub(r'^\s*[-*•]\s+', '* ', text, flags=re.MULTILINE)
+        
+        # Remove redundant phrases that don't add value
+        redundant_phrases = [
+            (r'\bUpon examining the contents of the folder, it becomes apparent that\s+', ''),
+            (r'\bIt should be noted that\s+', ''),
+            (r'\bIt is worth mentioning that\s+', ''),
+            (r'\bIn conclusion,\s+', ''),
+            (r'\bTo summarize,\s+', ''),
+            (r'\bOverall,\s+the\b', 'The'),
+            (r'\bOverall,\s+this\b', 'This'),
+            (r'\bThe overall purpose of this folder appears to be\b', 'This folder is'),
+            (r'\bsuggesting that\s+it may be\b', 'and may be'),
+            (r'\bindicating a strong connection\b', 'sharing'),
+            (r'\bsuggesting a close relationship\b', 'with'),
+        ]
+        for pattern, replacement in redundant_phrases:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        
+        # Fix common formatting issues
+        # Remove extra spaces after periods
+        text = re.sub(r'\.\s{2,}', '. ', text)
+        # Normalize multiple newlines to double newline max
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # Remove spaces before punctuation
+        text = re.sub(r'\s+([.,;:!?])', r'\1', text)
+        # Fix spacing after punctuation
+        text = re.sub(r'([.,;:!?])([^\s\n])', r'\1 \2', text)
+        
+        # Remove similarity score references if they're too verbose
+        # This pattern matches "similarity score: X%" and removes the verbose context
+        text = re.sub(r'\s*\(similarity score:\s*\d+%\)', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s*similarity score:\s*\d+%', '', text, flags=re.IGNORECASE)
+        # Remove references to "appears to be" when followed by "focused on" or similar
+        text = re.sub(r'\bappears to be focused on\b', 'focuses on', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bappears to be an?\b', 'is a', text, flags=re.IGNORECASE)
+        
+        # Clean up paragraph breaks - ensure paragraphs are separated by double newline
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        text = '\n\n'.join(paragraphs)
+        
+        # Remove leading/trailing whitespace from each line but preserve paragraph structure
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            cleaned_line = line.strip()
+            if cleaned_line:  # Only add non-empty lines
+                cleaned_lines.append(cleaned_line)
+            elif cleaned_lines and cleaned_lines[-1]:  # Preserve paragraph breaks
+                cleaned_lines.append('')
+        text = '\n'.join(cleaned_lines)
+        
+        # Remove redundant section headers that add no value
+        redundant_sections = [
+            r'\*\*Folder Summary:\*\*\s*',
+            r'\*\*Cross-file Relationships and Similarities:\*\*\s*',
+            r'\*\*Key Relationships and Connections:\*\*\s*',
+            r'\*\*Collective Knowledge and Theme:\*\*\s*',
+            r'\*\*Common Entities, Methods, or Concepts:\*\*\s*',
+            r'Cross-file Relationships and Similarities:\s*',
+            r'Key Relationships and Connections:\s*',
+            r'Collective Knowledge and Theme:\s*',
+            r'Common Entities, Methods, or Concepts:\s*',
+        ]
+        for pattern in redundant_sections:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        
+        # Clean up redundant introductory phrases
+        # Remove "The individual files within the folder are interconnected through various means:" type phrases
+        text = re.sub(r'The individual files within the folder are interconnected through various means:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'Individual files within the folder are interconnected through various means:\s*', '', text, flags=re.IGNORECASE)
+        
+        # Final cleanup: remove any remaining excessive whitespace
+        text = re.sub(r' {2,}', ' ', text)  # Multiple spaces to single space
+        text = text.strip()
+        
+        # Remove any remaining empty paragraphs
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 10]
+        text = '\n\n'.join(paragraphs)
+        
+        return text
 
     async def _determine_capabilities(
         self,
@@ -1002,11 +1366,11 @@ Summary:"""
                 error=str(e),
                 exc_info=True,
             )
-            return {
-                "node_count": 0,
-                "edge_count": 0,
-                "relationship_types": 0,
-            }
+        return {
+            "node_count": 0,
+            "edge_count": 0,
+            "relationship_types": 0,
+        }
 
     async def _build_knowledge_graph_background(
         self,
@@ -1030,13 +1394,13 @@ Summary:"""
                 await manager.send_message(
                     folder_id,
                     {
-                        "type": "graph_building",
+                        "type": "building_graph",
                         "folder_id": folder_id,
-                        "message": "Building knowledge graph...",
+                        "message": "Building knowledge graph in background...",
                     },
                 )
             except Exception as e:
-                logger.warning("Failed to send graph_building WebSocket message", error=str(e))
+                logger.warning("Failed to send building_graph WebSocket message", error=str(e))
             
             # Get chunks for the folder
             chunks = await self.db.get_chunks_by_folder(folder_id, limit=500, include_subfolders=True)
@@ -1118,6 +1482,15 @@ Summary:"""
                 logger.warning("Failed to send graph_complete WebSocket message", error=str(e))
                 
         except Exception as e:
+            # Check if it's a database initialization error
+            from app.core.exceptions import DatabaseError
+            if isinstance(e, DatabaseError) and "not initialized" in str(e):
+                logger.warning(
+                    "Database not initialized for background graph construction, skipping",
+                    folder_id=folder_id,
+                )
+                return
+            
             logger.error(
                 "Background knowledge graph construction failed",
                 folder_id=folder_id,

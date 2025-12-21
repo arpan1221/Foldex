@@ -7,6 +7,8 @@ for visualization and cross-document insights.
 
 from typing import List, Dict, Any, Optional
 import json
+import re
+import asyncio
 import structlog
 
 try:
@@ -51,8 +53,8 @@ class FoldexKnowledgeGraph:
         self.llm = llm or OllamaLLM()
         self._entity_cache: Dict[str, Dict] = {}  # Cache entity extractions
     
-    def build_from_documents(self, chunks: List[Document]) -> nx.DiGraph:
-        """Extract entities and relationships from documents.
+    async def build_from_documents(self, chunks: List[Document]) -> nx.DiGraph:
+        """Extract entities and relationships from documents (async to avoid blocking).
         
         Args:
             chunks: List of document chunks
@@ -84,13 +86,13 @@ class FoldexKnowledgeGraph:
         
         logger.info("Grouped chunks by document", document_count=len(docs))
         
-        # Extract entities and relationships per document
+        # Extract entities and relationships per document (async)
         for file_name, content_list in docs.items():
             try:
                 # Use first 5 chunks to avoid token limits
                 combined_content = "\n\n".join(content_list[:5])
                 
-                entities_and_rels = self._extract_graph_data(
+                entities_and_rels = await self._extract_graph_data(
                     file_name,
                     combined_content
                 )
@@ -119,8 +121,8 @@ class FoldexKnowledgeGraph:
         
         return self.graph
     
-    def _extract_graph_data(self, file_name: str, content: str) -> Dict[str, Any]:
-        """Use LLM to extract entities and relationships.
+    async def _extract_graph_data(self, file_name: str, content: str) -> Dict[str, Any]:
+        """Use LLM to extract entities and relationships (async to avoid blocking).
         
         Args:
             file_name: Name of the document
@@ -135,41 +137,80 @@ class FoldexKnowledgeGraph:
             logger.debug("Using cached entity extraction", file_name=file_name)
             return self._entity_cache[cache_key]
         
-        # Limit content length
-        content_preview = content[:2000] if len(content) > 2000 else content
+        # Clean and validate content before sending to LLM
+        # Remove excessive whitespace and non-printable characters
+        cleaned_content = re.sub(r'\s+', ' ', content)  # Normalize whitespace
+        cleaned_content = ''.join(char for char in cleaned_content if char.isprintable() or char.isspace())
+        
+        # Skip leading non-text content (common in PDFs with metadata)
+        # Look for first substantial text block (at least 50 chars of readable text)
+        text_start = 0
+        for i in range(len(cleaned_content) - 50):
+            chunk = cleaned_content[i:i+50]
+            # Check if chunk has reasonable text density (at least 70% alphabetic)
+            alpha_count = sum(1 for c in chunk if c.isalpha())
+            if alpha_count / len(chunk) >= 0.7:
+                text_start = i
+                break
+        
+        # Get content starting from first substantial text
+        content_preview = cleaned_content[text_start:text_start + 2000] if len(cleaned_content) > text_start + 2000 else cleaned_content[text_start:]
+        
+        # Validate we have enough meaningful content
+        if not content_preview or len(content_preview.strip()) < 50:
+            logger.warning(
+                "Content preview too short or invalid after cleaning",
+                file_name=file_name,
+                original_length=len(content),
+                preview_length=len(content_preview)
+            )
+            return {"entities": [], "relationships": []}
         
         prompt = f"""Analyze this document and extract entities and relationships.
 
 Document: {file_name}
 Content: {content_preview}
 
+Extract relevant entities and relationships based on the document's content. The entities and relationships should be appropriate for the document type (e.g., for research papers extract authors and methods; for code files extract functions and classes; for data files extract key datasets and fields).
+
 Extract:
-1. People (authors, researchers, mentioned individuals)
-2. Algorithms/Methods (DDPG, A2C, PPO, etc.)
-3. Concepts (Deep Reinforcement Learning, MDP, Actor-Critic, etc.)
-4. Datasets used
-5. Relationships between entities
+1. People (names of individuals mentioned: authors, researchers, team members, etc.)
+2. Methods/Techniques (algorithms, approaches, methodologies, processes mentioned)
+3. Concepts/Ideas (key topics, theories, principles, domains discussed)
+4. Tools/Resources (datasets, software, platforms, technologies, systems used or mentioned)
+5. Organizations/Institutions (companies, universities, agencies, etc.)
+6. Other relevant entities specific to this document's domain
+
+Also extract relationships between entities, such as:
+- authored, created, wrote (person -> document)
+- uses, implements, applies (document/entity -> method/tool)
+- contains, includes, references (document -> entity)
+- type_of, instance_of, related_to (entity -> entity)
+- works_with, collaborates_with (person -> person)
+- Any other relevant relationships based on the content
 
 Output ONLY valid JSON (no markdown, no code blocks):
 {{
     "entities": [
-        {{"type": "person", "name": "Arpan Nookala"}},
-        {{"type": "algorithm", "name": "DDPG"}},
-        {{"type": "concept", "name": "Deep Reinforcement Learning"}},
-        {{"type": "dataset", "name": "Atari"}}
+        {{"type": "person", "name": "Entity Name"}},
+        {{"type": "method", "name": "Entity Name"}},
+        {{"type": "concept", "name": "Entity Name"}},
+        {{"type": "tool", "name": "Entity Name"}}
     ],
     "relationships": [
-        {{"source": "Arpan Nookala", "target": "{file_name}", "relation": "authored"}},
-        {{"source": "{file_name}", "target": "DDPG", "relation": "uses"}},
-        {{"source": "DDPG", "target": "Deep Reinforcement Learning", "relation": "type_of"}},
-        {{"source": "{file_name}", "target": "Atari", "relation": "uses_dataset"}}
+        {{"source": "Entity Name", "target": "{file_name}", "relation": "relationship_type"}},
+        {{"source": "Entity A", "target": "Entity B", "relation": "relationship_type"}}
     ]
 }}
 
 JSON only:"""
         
         try:
-            response = self.llm.get_llm().invoke(prompt)
+            # Use async invoke to avoid blocking the event loop
+            response = await asyncio.wait_for(
+                self.llm.get_llm().ainvoke(prompt),
+                timeout=90.0  # Extended timeout (> 1 minute) for entity extraction
+            )
             
             # Extract content from response
             if hasattr(response, "content"):
@@ -179,21 +220,80 @@ JSON only:"""
             
             # Clean up response (remove markdown code blocks if present)
             content_str = content_str.strip()
+            if content_str.startswith("```json"):
+                content_str = content_str[7:]
+            if content_str.startswith("```"):
+                content_str = content_str[3:]
+            if content_str.endswith("```"):
+                content_str = content_str[:-3]
+            content_str = content_str.strip()
             
-            # Try to extract JSON from response (may be wrapped in markdown or have extra text)
-            json_text = self._extract_json_from_response(content_str)
+            # Try to extract JSON from response if it's not pure JSON
+            # Look for JSON object boundaries { ... }
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content_str, re.DOTALL)
+            if json_match:
+                content_str = json_match.group(0)
             
-            if not json_text:
-                # If no JSON found, return empty structure
+            # Check if response indicates refusal or no content
+            refusal_patterns = [
+                "I can't help", "I cannot help", "I cannot", "I can not",
+                "I'm unable", "I am unable", "There is no", "no information",
+                "I don't have", "I do not have"
+            ]
+            is_refusal = any(pattern.lower() in content_str.lower() for pattern in refusal_patterns) if content_str else True
+            
+            if not content_str or is_refusal:
                 logger.warning(
-                    "No JSON found in entity extraction response",
+                    "LLM refused or indicated no entities/relationships",
                     file_name=file_name,
-                    response_preview=content_str[:200],
+                    response_preview=content_str[:200] if content_str else "empty response"
                 )
+                # Try fallback: extract names from filename
+                fallback_entities = []
+                fallback_relationships = []
+                name_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'
+                potential_names = re.findall(name_pattern, file_name.replace('_', ' ').replace('-', ' '))
+                for name in potential_names[:3]:
+                    if len(name.split()) >= 2:
+                        fallback_entities.append({"type": "person", "name": name})
+                        fallback_relationships.append({
+                            "source": name,
+                            "target": file_name,
+                            "relation": "authored"
+                        })
+                if fallback_entities:
+                    logger.info("Created fallback entities from filename", file_name=file_name)
+                    return {"entities": fallback_entities, "relationships": fallback_relationships}
                 return {"entities": [], "relationships": []}
             
             # Parse JSON
-            graph_data = json.loads(json_text)
+            try:
+                graph_data = json.loads(content_str)
+            except json.JSONDecodeError:
+                # If direct parsing fails, try to find and extract JSON object
+                # Look for first { and last } to extract potential JSON
+                first_brace = content_str.find('{')
+                last_brace = content_str.rfind('}')
+                if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                    try:
+                        potential_json = content_str[first_brace:last_brace + 1]
+                        graph_data = json.loads(potential_json)
+                    except json.JSONDecodeError:
+                        # Final fallback: return empty structure
+                        logger.debug(
+                            "Could not extract valid JSON from response, returning empty structure",
+                            file_name=file_name,
+                            response_preview=content_str[:200]
+                        )
+                        return {"entities": [], "relationships": []}
+                else:
+                    # No JSON structure found, return empty
+                    logger.debug(
+                        "No JSON structure found in response, returning empty structure",
+                        file_name=file_name,
+                        response_preview=content_str[:200]
+                    )
+                    return {"entities": [], "relationships": []}
             
             # Validate structure
             if not isinstance(graph_data, dict):
@@ -217,49 +317,23 @@ JSON only:"""
                 response_preview=content_str[:200] if 'content_str' in locals() else "N/A",
             )
             return {"entities": [], "relationships": []}
-        except Exception as e:
-            logger.warning(
-                "Entity extraction failed",
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Entity extraction timed out (non-fatal, continuing)",
                 file_name=file_name,
-                error=str(e),
+                timeout_seconds=10.0,
             )
             return {"entities": [], "relationships": []}
-    
-    def _extract_json_from_response(self, text: str) -> Optional[str]:
-        """Extract JSON from LLM response (may be wrapped in markdown code blocks or have extra text).
-        
-        Args:
-            text: LLM response text
-            
-        Returns:
-            Extracted JSON string or None
-        """
-        import re
-        
-        # Try to find JSON code block first
-        json_block = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if json_block:
-            return json_block.group(1)
-        
-        # Try to find JSON object directly (look for balanced braces)
-        # Find the first { and try to find matching }
-        start_idx = text.find('{')
-        if start_idx != -1:
-            brace_count = 0
-            for i in range(start_idx, len(text)):
-                if text[i] == '{':
-                    brace_count += 1
-                elif text[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        # Found complete JSON object
-                        json_str = text[start_idx:i+1]
-                        # Validate it looks like JSON
-                        if json_str.strip().startswith('{') and json_str.strip().endswith('}'):
-                            return json_str
-                        break
-        
-        return None
+        except Exception as e:
+            # Log with exception type if error message is empty
+            error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+            logger.debug(
+                "Entity extraction failed (non-fatal, continuing)",
+                file_name=file_name,
+                error=error_msg,
+                error_type=type(e).__name__,
+            )
+            return {"entities": [], "relationships": []}
     
     def _add_to_graph(self, file_name: str, graph_data: Dict[str, Any]):
         """Add entities and relationships to NetworkX graph.
@@ -540,8 +614,8 @@ class GraphBuilder:
                     metadata={"file_name": "unknown"}
                 ))
         
-        # Build graph using FoldexKnowledgeGraph
-        graph = self.kg.build_from_documents(langchain_docs)
+        # Build graph using FoldexKnowledgeGraph (async to avoid blocking)
+        graph = await self.kg.build_from_documents(langchain_docs)
         
         # Add relationships if provided
         if relationships:

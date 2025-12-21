@@ -57,7 +57,9 @@ CLASSIFICATION_PROMPT = """You are a query classifier for a document search syst
    Examples: "What is this folder about?", "Summarize the contents"
    
 3. RELATIONSHIP - Questions seeking patterns/connections across documents
-   Examples: "What are common themes?", "Find patterns across files", "How do these relate?"
+   Examples: "What are common themes?", "Find patterns across files", "How do these relate?", 
+             "are there similarities across files", "similarities across the files", 
+             "what do these files have in common", "compare files"
    
 4. COMPARISON - Questions comparing entities/documents
    Examples: "Compare X and Y", "Difference between A and B", "X versus Y"

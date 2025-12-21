@@ -180,6 +180,197 @@ def clean_response(text: str) -> str:
     text = re.sub(r'\n +', '\n', text)  # Remove leading spaces on lines
     text = text.strip()
 
+    # Remove repetitive/repeating text patterns (common LLM failure mode)
+    # Enhanced duplicate detection for sentences and paragraphs
+    lines = text.split('\n')
+    cleaned_lines = []
+    seen_sentences: set[str] = set()
+    seen_line_signatures = set()
+    
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            cleaned_lines.append(line)
+            continue
+            
+        line_lower = line_stripped.lower()
+        
+        # Split line into sentences for better duplicate detection
+        sentences = re.split(r'[.!?]+', line_stripped)
+        cleaned_sentences = []
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence or len(sentence) < 10:
+                continue
+                
+            # Normalize sentence (remove extra spaces, lowercase for comparison)
+            sentence_normalized = re.sub(r'\s+', ' ', sentence.lower())
+            
+            # Check for exact duplicate sentences
+            if sentence_normalized in seen_sentences:
+                continue
+                
+            # Check for near-duplicates (80% similarity threshold)
+            is_duplicate = False
+            for seen in seen_sentences:
+                # Simple similarity check: count common words
+                seen_words = set(seen.split())
+                current_words = set(sentence_normalized.split())
+                if len(seen_words) > 0 and len(current_words) > 0:
+                    common = seen_words & current_words
+                    similarity = len(common) / max(len(seen_words), len(current_words))
+                    if similarity > 0.8 and abs(len(seen_words) - len(current_words)) < 5:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                seen_sentences.add(sentence_normalized)
+                cleaned_sentences.append(sentence)
+                # Keep only last 50 sentences to avoid memory bloat
+                if len(seen_sentences) > 50:
+                    seen_sentences = set(list(seen_sentences)[-50:])
+        
+        # Reconstruct line from cleaned sentences
+        if cleaned_sentences:
+            cleaned_line = '. '.join(cleaned_sentences) + '.' if cleaned_sentences else ''
+            # Also check line-level duplicates (first 100 chars as signature)
+            line_sig = cleaned_line.lower()[:100]
+            if line_sig not in seen_line_signatures:
+                seen_line_signatures.add(line_sig)
+                cleaned_lines.append(cleaned_line)
+                # Keep only last 30 line signatures
+                if len(seen_line_signatures) > 30:
+                    seen_line_signatures = set(list(seen_line_signatures)[-30:])
+        elif not line_stripped:  # Keep empty lines
+            cleaned_lines.append(line)
+    
+    text = '\n'.join(cleaned_lines)
+
+    # Remove repetitive word sequences (garbled text pattern)
+    # Pattern: repeated words like "After analyzing After analyzing"
+    text = re.sub(r'\b(\w+)(\s+\1){2,}\b', r'\1', text, flags=re.IGNORECASE)
+    
+    # Remove garbled repetitive phrases (enhanced detection)
+    # Pattern: "After analyzing all three files After analyzing all three files"
+    words = text.split()
+    cleaned_words = []
+    i = 0
+    window_size = 5  # Check for 5-word sequence repeats
+    
+    while i < len(words):
+        if i >= window_size:  # Need some context
+            # Check for repeating sequences of 3-5 words
+            for seq_len in range(window_size, 2, -1):  # Try longer sequences first (5, 4, 3)
+                if i + seq_len <= len(words):
+                    current_seq = ' '.join(words[i:i+seq_len]).lower()
+                    # Check last 30 words for this sequence
+                    lookback_start = max(0, i - 30)
+                    recent_text = ' '.join(words[lookback_start:i]).lower()
+                    
+                    if current_seq in recent_text:
+                        # Found repetition, skip this sequence
+                        i += seq_len
+                        break
+            else:
+                # No repetition found, add current word
+                cleaned_words.append(words[i])
+                i += 1
+        else:
+            # Not enough context yet, add word
+            cleaned_words.append(words[i])
+            i += 1
+    
+    text = ' '.join(cleaned_words)
+    
+    # Remove asterisks and fix word corruption patterns (letters mixed within words)
+    # Pattern: "thresholdl**ing" or "implementedl i tos" - words corrupted with mixed letters
+    # First remove asterisks which are often corruption markers
+    text = re.sub(r'\*{2,}', '', text)  # Remove multiple asterisks
+    text = re.sub(r'\*\s*\*', '', text)  # Remove asterisk pairs with spaces
+    
+    # This is a more aggressive cleanup for severely corrupted text
+    words = text.split()
+    cleaned_words_corruption = []
+    for word in words:
+        # Clean up word: remove trailing corruption markers
+        # Remove trailing single letters that look like corruption (e.g., "thresholdl" -> "threshold")
+        word_clean = word
+        if len(word) > 5:
+            # Remove trailing 1-2 lowercase letters that might be corruption
+            # Pattern: "thresholdl" -> "threshold"
+            word_clean = re.sub(r'([a-z]+)([a-z]{1,2})$', r'\1', word) if re.match(r'^[a-z]+[a-z]{1,2}$', word.lower()) else word
+        
+        # Remove word if it has suspicious corruption patterns
+        # Pattern: word with mixed lowercase/uppercase mid-word in unusual ways
+        # Pattern: word ending with letters that look like they belong to next word
+        # Example: "thresholdl" -> should be "threshold" or "thresholding"
+        
+        # Check for corruption: word ending with single lowercase letter followed by punctuation
+        # or word with excessive case changes
+        if len(word_clean) > 3:
+            word = word_clean
+            # Count case changes (should be minimal for normal words)
+            case_changes = sum(1 for i in range(1, len(word)) if word[i].isupper() != word[i-1].isupper())
+            # Normal words have 0-2 case changes (e.g., "iPhone", "JavaScript")
+            if case_changes > 4 and word[0].islower():  # Excessive case changes in lowercase word
+                continue  # Skip corrupted word
+            
+            # Check for pattern like "wordl" or "wordingl" (trailing single letter)
+            # or "wordword" (repeated word fragments)
+            if re.search(r'\w{4,}\w{1,2}$', word) and len(word) > 8:
+                # Check if last 1-2 chars might be corruption
+                base_word = word[:-2] if len(word) > 6 else word[:-1]
+                # If base word is a valid-looking word, truncate corruption
+                if re.match(r'^\w{4,}$', base_word):
+                    word = base_word
+        
+        cleaned_words_corruption.append(word)
+    
+    text = ' '.join(cleaned_words_corruption)
+    
+    # Remove corrupted/jumbled text patterns
+    # Pattern: text with excessive punctuation, parentheses, or special characters mixed in
+    # Examples: "DKSH Smolla Indian ),(Mum Ganbaiesh, arIndpania)"
+    # This pattern suggests garbled output
+    sentences = re.split(r'[.!?]+', text)
+    cleaned_sentences = []
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # Check for excessive special characters that suggest garbling
+        special_char_ratio = len(re.findall(r'[^\w\s]', sentence)) / max(len(sentence), 1)
+        
+        # Check for suspicious patterns: parentheses mid-word, excessive commas
+        # Also check for word boundary corruption (letters bleeding between words)
+        has_suspicious_pattern = (
+            re.search(r'\w+[(),]\w+', sentence) or  # Parentheses/comma inside words
+            re.search(r'[(),]{2,}', sentence) or  # Multiple consecutive punctuation
+            re.search(r'\w{10,}', sentence) or  # Very long words (might be corrupted concatenation)
+            special_char_ratio > 0.15  # More than 15% special characters
+        )
+        
+        # Check for excessive word repetition within sentence (garbled pattern)
+        words_in_sent = sentence.split()
+        if len(words_in_sent) > 5:
+            word_counts: dict[str, int] = {}
+            for w in words_in_sent:
+                word_counts[w.lower()] = word_counts.get(w.lower(), 0) + 1
+            max_repeats = max(word_counts.values()) if word_counts else 1
+            # If a word appears more than 30% of the time, it's likely garbled
+            if max_repeats > len(words_in_sent) * 0.3:
+                has_suspicious_pattern = True
+        
+        # Only skip if it's clearly garbled AND short (don't skip legitimate technical text)
+        if has_suspicious_pattern and len(sentence.split()) < 10:
+            continue
+        
+        cleaned_sentences.append(sentence)
+    
+    text = '. '.join(cleaned_sentences) if cleaned_sentences else text
+
     # Final pass: remove any remaining empty lines at start/end
     lines = text.split('\n')
     while lines and not lines[0].strip():
@@ -188,7 +379,107 @@ def clean_response(text: str) -> str:
         lines.pop()
     text = '\n'.join(lines)
 
-    return text
+    # Final cleanup of excessive repetition
+    # Remove paragraphs that are mostly duplicated
+    paragraphs = text.split('\n\n')
+    unique_paragraphs = []
+    seen_paragraphs: set[str] = set()
+    
+    for para in paragraphs:
+        para_stripped = para.strip()
+        if not para_stripped:
+            continue
+            
+        para_normalized = re.sub(r'\s+', ' ', para_stripped.lower())
+        para_sig = para_normalized[:150]  # First 150 chars as signature
+        
+        # Check for exact duplicates
+        if para_sig and para_sig not in seen_paragraphs:
+            # Also check for near-duplicates (very similar paragraphs)
+            is_near_duplicate = False
+            for seen_sig in seen_paragraphs:
+                # Calculate simple similarity
+                common_chars = sum(1 for a, b in zip(para_sig, seen_sig) if a == b)
+                similarity = common_chars / max(len(para_sig), len(seen_sig), 1)
+                if similarity > 0.85:  # 85% similarity threshold
+                    is_near_duplicate = True
+                    break
+            
+            if not is_near_duplicate:
+                seen_paragraphs.add(para_sig)
+                unique_paragraphs.append(para_stripped)
+                # Keep only last 40 paragraph signatures
+                if len(seen_paragraphs) > 40:
+                    seen_paragraphs = set(list(seen_paragraphs)[-40:])
+    
+    text = '\n\n'.join(unique_paragraphs)
+
+    # Detect repeated opening text blocks (common in corrupted responses)
+    # Pattern: "The literature review... The literature review..."
+    # Find the longest repeated prefix
+    if len(text) > 200:
+        # Try to find if text starts with a repeated block
+        # Check first 500 chars against rest of text
+        first_block = text[:500].lower().strip()
+        remaining_text = text[500:].lower().strip()
+        
+        # Look for first_block appearing early in remaining_text
+        # This indicates the response was duplicated
+        if len(first_block) > 100 and len(remaining_text) > 100:
+            # Check if first 200 chars of remaining_text match first 200 chars of first_block
+            first_block_sig = first_block[:200]
+            remaining_sig = remaining_text[:200]
+            
+            # Calculate similarity
+            matching_chars = sum(1 for a, b in zip(first_block_sig, remaining_sig) if a == b)
+            similarity = matching_chars / max(len(first_block_sig), len(remaining_sig), 1)
+            
+            if similarity > 0.8:  # 80% similarity indicates duplication
+                # Find where the duplication likely ends (where first_block stops matching)
+                # Look for a natural break point (sentence end) near where duplication would end
+                # Just keep the first occurrence
+                text = text[:500].strip()
+                logger.debug("Detected repeated opening block, truncated to first occurrence")
+    
+    # Final aggressive cleanup: remove any remaining obvious duplicates at start
+    # Sometimes the LLM repeats the entire response
+    sentences = re.split(r'[.!?]+', text)
+    if len(sentences) > 4:  # Only check if we have enough sentences
+        # Check if first half of sentences is very similar to second half
+        mid_point = len(sentences) // 2
+        first_half = ' '.join(sentences[:mid_point]).lower()
+        second_half = ' '.join(sentences[mid_point:]).lower()
+        
+        # If second half starts very similarly to first half, it might be a duplicate
+        if len(first_half) > 100 and len(second_half) > 100:
+            first_words = first_half.split()[:30]  # First 30 words (more thorough check)
+            second_words = second_half.split()[:30]
+            
+            # Check if first 30 words match
+            matching_words = sum(1 for a, b in zip(first_words, second_words) if a == b)
+            word_similarity = matching_words / max(len(first_words), len(second_words), 1)
+            
+            if word_similarity > 0.85:  # 85% of words match = duplicate
+                # Second half is a repeat, keep only first half
+                text = '. '.join(sentences[:mid_point]) + '.'
+                logger.debug("Detected repeated response halves, kept only first half")
+    
+    # One more pass: remove duplicate sentences at the very beginning
+    # Pattern: "Based on the provided resume, X. Based on the provided resume, X."
+    text = re.sub(r'^(.*?)(\.\s*)\1(\.)', r'\1\2', text, flags=re.IGNORECASE | re.MULTILINE)
+    
+    # Remove repeated opening phrases more aggressively
+    # Pattern: "The literature review of X is... The literature review of X is..."
+    # Match longer opening phrases that repeat
+    opening_phrase_patterns = [
+        r'^(The literature review[^.!?]{0,200}?)(\.\s+)\1',
+        r'^(Based on[^.!?]{0,200}?)(\.\s+)\1',
+        r'^(The main[^.!?]{0,200}?)(\.\s+)\1',
+    ]
+    for pattern in opening_phrase_patterns:
+        text = re.sub(pattern, r'\1\2', text, flags=re.IGNORECASE | re.DOTALL)
+
+    return text.strip()
 
 
 class RetrievalQAChain:
@@ -238,7 +529,7 @@ class RetrievalQAChain:
     def _initialize_chain(self) -> None:
         """Initialize retrieval chain using LCEL for better streaming."""
         try:
-            # Get default prompt
+            # Get default prompt (file_id will be checked in invoke method)
             prompt = self.prompt_manager.get_prompt("default")
 
             # Create format_docs function with TTFT optimization
@@ -296,6 +587,7 @@ class RetrievalQAChain:
         citations_callback: Optional[Callable[[list], None]] = None,
         callbacks: Optional[List] = None,
         debug_metrics: Optional[DebugMetrics] = None,
+        folder_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Invoke chain with query.
 
@@ -307,6 +599,7 @@ class RetrievalQAChain:
             citations_callback: Optional callback for progressive citations
             callbacks: Optional list of LangChain callbacks for observability
             debug_metrics: Optional debug metrics collector
+            folder_summary: Optional folder summary dictionary to inject into context
 
         Returns:
             Dictionary with answer and source documents
@@ -315,6 +608,13 @@ class RetrievalQAChain:
             ProcessingError: If chain invocation fails
         """
         try:
+            # Check if file_id filter is set (file-specific chat) - do this early so format_docs can use it
+            file_id = None
+            if hasattr(self.retriever, "_file_id_filter"):
+                file_id = getattr(self.retriever, "_file_id_filter", None)
+                if file_id:
+                    logger.debug("Detected file-specific query, using file-specific prompt", file_id=file_id)
+
             # TTFT Optimization: Create optimized format_docs function
             def format_docs(docs):
                 # Check for empty retrieval
@@ -337,27 +637,30 @@ class RetrievalQAChain:
                         optimized_count=len(docs)
                     )
                 # Use prompt manager's context formatting for consistent, file-grouped output
-                # Include folder summary if available
-                return self.prompt_manager.format_context(list(docs), folder_summary=folder_summary)
+                # Include folder summary if available (skip for file-specific queries)
+                # file_id is captured from outer scope
+                return self.prompt_manager.format_context(list(docs), folder_summary=folder_summary, file_id=file_id)
 
-            # Update prompt if query type is different
-            if query_type and query_type != "default":
-                prompt = self.prompt_manager.get_prompt(query_type)
-
-                # Reinitialize chain with new prompt
-                self.chain = RunnableParallel({
-                    "context": self.retriever | format_docs,
-                    "question": RunnablePassthrough(),
-                    "source_documents": self.retriever
-                }) | {
-                    "answer": (
-                        RunnablePassthrough.assign(
-                            context=lambda x: x["context"],
-                            question=lambda x: x["question"]
-                        ) | prompt | self.llm.get_llm() | StrOutputParser()
-                    ),
-                    "source_documents": lambda x: x["source_documents"]
-                }
+            # Update prompt if query type is different or file_id is present
+            if (query_type and query_type != "default") or file_id:
+                prompt = self.prompt_manager.get_prompt(query_type or "default", file_id=file_id)
+            else:
+                prompt = self.prompt_manager.get_prompt("default")
+            
+            # Reinitialize chain with prompt (always reinitialize to ensure format_docs closure captures file_id)
+            self.chain = RunnableParallel({
+                "context": self.retriever | format_docs,
+                "question": RunnablePassthrough(),
+                "source_documents": self.retriever
+            }) | {
+                "answer": (
+                    RunnablePassthrough.assign(
+                        context=lambda x: x["context"],
+                        question=lambda x: x["question"]
+                    ) | prompt | self.llm.get_llm() | StrOutputParser()
+                ),
+                "source_documents": lambda x: x["source_documents"]
+            }
 
             # Set up streaming if callback provided
             callback_list = callbacks or []

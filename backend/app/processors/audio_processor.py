@@ -250,9 +250,45 @@ class AudioProcessor(BaseProcessor):
                 if progress_callback:
                     progress_callback(0.1)
             
-            # Load model if not already loaded
+            # Load model if not already loaded (use existing method but in executor)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
             async with self._model_lock:
-                model = self._load_model()
+                # Load model (first load might be slow but runs in executor)
+                if self.whisper_model is None:
+                    # Run model loading in executor to avoid blocking event loop
+                    # Capture instance variables for executor function
+                    model_name = self.model_name
+                    device = self.device
+                    
+                    def load_model_sync():
+                        try:
+                            if FASTER_WHISPER_AVAILABLE:
+                                logger.info("Loading faster-whisper model", model=model_name, device=device)
+                                return WhisperModel(
+                                    model_name,
+                                    device=device,
+                                    compute_type="int8" if device == "cpu" else "float16",
+                                )
+                            elif WHISPER_AVAILABLE:
+                                logger.info("Loading openai-whisper model", model=model_name, device=device)
+                                return whisper.load_model(model_name, device=device)
+                            else:
+                                logger.warning("Whisper not available")
+                                return None
+                        except Exception as e:
+                            logger.error("Failed to load Whisper model", error=str(e), exc_info=True)
+                            return None
+                    
+                    model = await loop.run_in_executor(None, load_model_sync)
+                    if model:
+                        self.whisper_model = model
+                        logger.info("Whisper model loaded successfully")
+                    else:
+                        logger.error("Whisper model loading returned None")
+                else:
+                    model = self.whisper_model
             
             if model is None:
                 raise DocumentProcessingError(
@@ -263,10 +299,7 @@ class AudioProcessor(BaseProcessor):
             if progress_callback:
                 progress_callback(0.2)
             
-            # Transcribe audio
-            import asyncio
-            loop = asyncio.get_event_loop()
-            
+            # Transcribe audio (run in executor to avoid blocking)
             full_text = ""
             segment_list = []
             detected_language = "en"

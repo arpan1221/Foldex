@@ -57,6 +57,9 @@ class PromptManager:
         # Default Prompt - general purpose
         prompts["default"] = self._create_default_prompt()
 
+        # File-specific Prompt - for queries about a single file
+        prompts["file_specific"] = self._create_file_specific_prompt()
+
         return prompts
 
     def _create_factual_prompt(self) -> PromptTemplate:
@@ -94,7 +97,7 @@ Answer:"""
         Returns:
             PromptTemplate for synthesis queries (RetrievalQA compatible)
         """
-        template = """Analyze the documents and find patterns across ALL files.
+        template = """Analyze ALL documents in the context and provide a comprehensive synthesis.
 
 Context:
 {context}
@@ -102,15 +105,21 @@ Context:
 Question: {question}
 
 Instructions:
-- Provide a comprehensive synthesis that integrates information from ALL files in the context
-- Discuss patterns, themes, and connections across different documents
-- Be thorough in explaining relationships and commonalities
-- Use as much detail as needed to fully answer the question
-- Add citations [1], [2] after each claim
-- No thinking tags or meta-commentary
-- Responses should be detailed enough to give a complete picture
+- Analyze patterns, themes, and connections across ALL files mentioned in the context
+- For similarity queries (e.g., "are there similarities across files?"), explicitly compare files and identify:
+  * Common themes, topics, or concepts shared across multiple files
+  * Similar approaches, methods, or techniques used in different files
+  * Overlapping entities, people, or organizations mentioned
+  * Complementary or related content between files
+- Be thorough and specific - cite exact examples from files
+- Discuss both similarities AND differences when relevant
+- Group similar files together in your analysis
+- Use citations [1], [2] after each claim referencing specific files
+- Be concise but comprehensive - avoid repetition
+- No thinking tags, meta-commentary, or repeating phrases
+- If no similarities exist, state that clearly
 
-Answer:"""
+Answer directly and clearly:"""
 
         return PromptTemplate(
             template=template,
@@ -123,7 +132,7 @@ Answer:"""
         Returns:
             PromptTemplate for relationship queries (RetrievalQA compatible)
         """
-        template = """Identify relationships and connections across ALL files in the context.
+        template = """Analyze the files in the context and identify relationships, similarities, and connections.
 
 Context:
 {context}
@@ -131,15 +140,57 @@ Context:
 Question: {question}
 
 Instructions:
-- Provide a detailed analysis of relationships and connections across ALL files
-- Explain how different documents connect, relate, or reference each other
-- Discuss shared themes, entities, or concepts
-- Be comprehensive in describing the connections you find
-- Add citations [1], [2] after each claim
-- No thinking tags or meta-commentary
-- Provide enough detail to clearly explain the relationships
+- For similarity queries (e.g., "are there similarities across files?"), explicitly identify:
+  * What themes, topics, or concepts appear in multiple files
+  * Which files share similar content, approaches, or focus
+  * Common entities, methods, or ideas across files
+  * How files complement or relate to each other
+- Compare files directly and state similarities clearly
+- Be specific - cite exact examples from the files
+- Group similar files together in your response
+- If similarities exist, describe them clearly with file references
+- If no clear similarities exist, state that explicitly
+- Add citations [1], [2] after each claim referencing specific files
+- Be concise and direct - avoid repetition or garbled text
+- No thinking tags, meta-commentary, or repeating phrases
+- Write clearly and stop when you've answered the question
 
-Answer:"""
+Answer directly:"""
+
+        return PromptTemplate(
+            template=template,
+            input_variables=["context", "question"]
+        )
+
+    def _create_file_specific_prompt(self) -> PromptTemplate:
+        """Create prompt template for file-specific queries (when user chats with a single file).
+
+        Returns:
+            PromptTemplate for file-specific queries (RetrievalQA compatible)
+        """
+        template = """Answer the question using ONLY the information from the provided context chunks.
+
+Context (from the file):
+{context}
+
+Question: {question}
+
+Instructions:
+- Use ONLY the information from the context chunks above (they are all from the same file)
+- Provide a clear, comprehensive answer that fully addresses the question
+- Be specific and cite exact examples from the context using [1], [2] citations
+- Write clearly and concisely - avoid repetition or repeating the same information
+- Stop when you've fully answered the question
+- Do NOT repeat the question or rephrase it unnecessarily
+- Do NOT repeat the same information multiple times in different ways
+- No thinking tags, meta-commentary, or garbled/repetitive text
+
+CITATION REQUIREMENTS:
+- Add inline citations like [1], [2] immediately after claims from the context
+- Only cite sources you actually used from the context above
+- Multiple citations for one claim: [1][2]
+
+Answer directly and clearly:"""
 
         return PromptTemplate(
             template=template,
@@ -162,21 +213,23 @@ Question: {question}
 Instructions:
 - Provide a complete and thorough answer that fully addresses the question
 - Use information from ALL files in the context, not just one
-- Adapt your response length to match the query:
-  * Simple questions (e.g., "What is X?") → brief but complete answers
-  * Detailed questions (e.g., "Explain X", "Describe Y", "Summarize Z") → comprehensive explanations
-  * Analysis questions (e.g., "Compare A and B", "What are the patterns?") → thorough analysis
-- Add citations [1], [2] after each claim
-- No thinking tags or meta-commentary
+- For similarity/comparison queries, explicitly identify and describe:
+  * Common themes, topics, or concepts across files
+  * Similar approaches, methods, or content in different files
+  * How files relate to each other
+- Adapt your response length to match the query complexity
+- Be specific and cite exact examples from files
+- Add citations [1], [2] after each claim referencing specific files
+- Be concise - avoid repetition or repeating the same information multiple times
+- Write clearly and stop when the question is fully answered
+- No thinking tags, meta-commentary, or garbled/repetitive text
 
 CITATION REQUIREMENTS:
 - Add inline citations like [1], [2] immediately after claims from sources
 - Only cite sources you actually used from the context above
 - Multiple citations for one claim: [1][2]
-- Example: "The folder contains implementation details [1] and best practices [2]."
-- Get straight to the answer, but be comprehensive when the question requires it
 
-Answer:"""
+Answer directly and clearly:"""
 
         return PromptTemplate(
             template=template,
@@ -184,12 +237,13 @@ Answer:"""
         )
 
     def get_prompt(
-        self, query_type: str = "default"
+        self, query_type: str = "default", file_id: Optional[str] = None
     ) -> PromptTemplate:
         """Get prompt template for query type.
 
         Args:
-            query_type: Type of query (factual, synthesis, relationship, default)
+            query_type: Type of query (factual, synthesis, relationship, default, file_specific)
+            file_id: Optional file_id - if provided, use file_specific prompt
 
         Returns:
             PromptTemplate instance
@@ -197,6 +251,11 @@ Answer:"""
         Raises:
             ProcessingError: If query type is not supported
         """
+        # If file_id is provided, use file-specific prompt
+        if file_id:
+            logger.debug("Using file-specific prompt", file_id=file_id)
+            return self.prompts.get("file_specific", self.prompts["default"])
+        
         if query_type not in self.prompts:
             logger.warning(
                 "Unknown query type, using default",
@@ -217,7 +276,7 @@ Answer:"""
         """
         query_lower = query.lower()
 
-        # Relationship indicators
+        # Relationship indicators (includes similarity queries)
         relationship_keywords = [
             "relationship",
             "related",
@@ -226,27 +285,43 @@ Answer:"""
             "compare",
             "difference",
             "similar",
+            "similarities",
+            "similarity",
+            "similar to",
+            "same",
+            "common",
+            "shared",
+            "overlap",
             "associate",
             "correlate",
             "depend",
             "influence",
             "cause",
             "effect",
+            "in common",
+            "have in common",
         ]
 
-        # Synthesis indicators
+        # Synthesis indicators (cross-file analysis)
         synthesis_keywords = [
             "summarize",
             "synthesize",
             "overall",
             "general",
             "all documents",
+            "all files",
             "across",
+            "across files",
+            "across documents",
             "multiple",
+            "multiple files",
             "combine",
             "integrate",
             "pattern",
+            "patterns",
             "theme",
+            "themes",
+            "together",
         ]
 
         # Factual indicators
@@ -292,7 +367,7 @@ Answer:"""
         lines = []
         lines.append("=== FOLDER OVERVIEW ===")
         
-        # Master summary
+        # Master summary (contains cross-file similarities)
         if folder_summary.get("summary"):
             lines.append(f"\n{folder_summary['summary']}")
         
@@ -301,6 +376,23 @@ Answer:"""
         if file_type_dist:
             type_parts = [f"{count} {ftype}" for ftype, count in sorted(file_type_dist.items())]
             lines.append(f"\nFile Types: {', '.join(type_parts)}")
+        
+        # Cross-file relationships (CRITICAL for similarity queries)
+        relationship_summary = folder_summary.get("relationship_summary", [])
+        if relationship_summary and len(relationship_summary) > 0:
+            lines.append("\n--- Cross-File Relationships & Similarities ---")
+            for rel in relationship_summary[:5]:  # Top 5 relationships
+                source = rel.get('source_file', 'File')
+                target = rel.get('target_file', 'File')
+                rel_type = rel.get('relationship_type', 'related')
+                confidence = rel.get('confidence', 0)
+                lines.append(f"• {source} ↔ {target}: {rel_type} (confidence: {confidence:.0%})")
+        
+        # Common themes across files
+        insights = folder_summary.get("insights", {})
+        top_themes = insights.get("top_themes", [])
+        if top_themes:
+            lines.append(f"\nCommon Themes Across Files: {', '.join(top_themes)}")
         
         # Top entities (brief)
         entity_summary = folder_summary.get("entity_summary", {})
@@ -319,7 +411,8 @@ Answer:"""
         documents: list, 
         numbered: bool = True, 
         include_relationships: bool = True,
-        folder_summary: Optional[Dict[str, Any]] = None
+        folder_summary: Optional[Dict[str, Any]] = None,
+        file_id: Optional[str] = None
     ) -> str:
         """Format retrieved documents as context string with optional numbering for citations.
 
@@ -328,13 +421,14 @@ Answer:"""
             numbered: If True, number each chunk for inline citations
             include_relationships: If True, include document relationship analysis
             folder_summary: Optional folder summary dictionary to prepend to context
+            file_id: Optional file_id - if provided, skip folder summary (file-specific query)
 
         Returns:
             Formatted context string with optionally numbered chunks, grouped by file
         """
-        # Format folder summary if provided
+        # Format folder summary if provided (skip for file-specific queries)
         folder_summary_text = ""
-        if folder_summary:
+        if folder_summary and not file_id:
             folder_summary_text = self.format_folder_summary(folder_summary)
         
         if not documents:
