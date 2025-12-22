@@ -82,8 +82,8 @@ Foldex uses **Unstructured.io** as the primary document processing engine for PD
 </div>
 
 <div id="diagram-architecture" class="diagram-container">
+
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 graph TB
     Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication]
     Auth --> Fetch[Google Drive API<br/>Fetch Files + Metadata]
@@ -138,8 +138,8 @@ graph TB
 </div>
 
 <div id="diagram-dataflow" class="diagram-container">
+
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 sequenceDiagram
     participant User
     participant Frontend as React Frontend
@@ -196,8 +196,8 @@ sequenceDiagram
 </div>
 
 <div id="diagram-ingestion" class="diagram-container">
+
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication Layer]
     Auth --> Fetch[Google Drive API<br/>File Metadata + Content]
@@ -229,8 +229,8 @@ flowchart TD
 </div>
 
 <div id="diagram-citation" class="diagram-container">
+
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start[LLM Response Generated] --> Parse[Parse for citation markers<br/>Pattern: cid:chunk_id]
     
@@ -268,8 +268,8 @@ flowchart TD
 </div>
 
 <div id="diagram-performance" class="diagram-container">
+
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start[System Startup] --> Check1{Ollama<br/>Running?}
     
@@ -595,13 +595,6 @@ ffmpeg -version
 Interactive API documentation is available at:
 - **Swagger UI**: http://localhost:8000/api/docs
 - **ReDoc**: http://localhost:8000/api/redoc
-
-## 🤝 Contributing
-
-1. Follow the coding standards in `Claude.md`
-2. Write tests for new features
-3. Update `CHANGELOG.md` for significant changes
-4. Use conventional commits
 
 ## 📄 License
 
