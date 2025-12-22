@@ -35,9 +35,55 @@ docker-compose up -d
 
 ## 🏗️ Architecture
 
-Foldex uses **Unstructured.io** as the primary document processing engine for PDFs, Office documents (Word, Excel, PowerPoint), text files, HTML, CSV, and images. Unstructured.io provides intelligent content extraction with OCR support for scanned documents and images, title-based chunking for better semantic understanding, and unified processing across multiple document formats.
+Foldex uses **Unstructured.io** as the primary document processing engine for PDFs, Office documents (Word, Excel, PowerPoint), text files, HTML, CSV, and images. Unstructured.io provides intelligent content extraction with OCR support for scanned documents and images, title-based chunking for better semantic understanding, and unified processing across multiple document formats. Embeddings are generated using **Ollama's nomic-embed-text** model for local-first vector generation.
 
+<style>
+.diagram-nav {
+  display: flex;
+  gap: 10px;
+  margin: 20px 0;
+  flex-wrap: wrap;
+  border-bottom: 2px solid #e1e4e8;
+  padding-bottom: 10px;
+}
+.diagram-nav a {
+  padding: 8px 16px;
+  text-decoration: none;
+  border-radius: 6px;
+  background-color: #f6f8fa;
+  color: #0366d6;
+  border: 1px solid #d1d5da;
+  transition: all 0.2s;
+  font-weight: 500;
+  display: inline-block;
+}
+.diagram-nav a:hover {
+  background-color: #e1e4e8;
+  border-color: #0366d6;
+}
+.diagram-container {
+  display: none;
+  margin: 20px 0;
+}
+.diagram-container:target {
+  display: block;
+}
+#diagram-architecture {
+  display: block; /* Default visible */
+}
+</style>
+
+<div class="diagram-nav">
+  <a href="#diagram-architecture">🏗️ Architecture</a>
+  <a href="#diagram-dataflow">📊 Data Flow</a>
+  <a href="#diagram-ingestion">🔄 Ingestion Pipeline</a>
+  <a href="#diagram-citation">📝 Citation Flow</a>
+  <a href="#diagram-performance">⚡ Performance</a>
+</div>
+
+<div id="diagram-architecture" class="diagram-container">
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 graph TB
     Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication]
     Auth --> Fetch[Google Drive API<br/>Fetch Files + Metadata]
@@ -50,7 +96,7 @@ graph TB
     UnstructuredProc --> Chunker[Smart Chunker<br/>600 tokens, 100 overlap<br/>Metadata preservation]
     AudioProc --> Chunker
     
-    Chunker --> Embed[Sentence Transformers<br/>Embedding Generation<br/>Batched + Cached]
+    Chunker --> Embed[Ollama: nomic-embed-text<br/>Embedding Generation<br/>Batched + Cached]
     
     Embed --> VectorDB[(ChromaDB<br/>Persistent Vector Store)]
     
@@ -84,15 +130,16 @@ graph TB
     Citations --> UI[Client UI<br/>Progressive display]
     Stream --> UI
     
-    style ChatService fill:#d4edda,stroke:#28a745,stroke-width:2px
-    style RAGFlow fill:#d4edda,stroke:#28a745,stroke-width:2px
-    style CachedResult fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style VectorDB fill:#d1ecf1,stroke:#0c5460,stroke-width:2px
+    style ChatService fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
+    style RAGFlow fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
+    style CachedResult fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style VectorDB fill:#ffffff,stroke:#0c5460,stroke-width:2px,color:#000000
 ```
+</div>
 
-## 📊 Data Flow
-
+<div id="diagram-dataflow" class="diagram-container">
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 sequenceDiagram
     participant User
     participant Frontend as React Frontend
@@ -146,10 +193,11 @@ sequenceDiagram
     
     Frontend-->>User: Display response with inline citations
 ```
+</div>
 
-## 🔄 Ingestion Pipeline
-
+<div id="diagram-ingestion" class="diagram-container">
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication Layer]
     Auth --> Fetch[Google Drive API<br/>File Metadata + Content]
@@ -164,8 +212,8 @@ flowchart TD
     
     Chunker --> Cache{Embedding<br/>Cached?}
     
-    Cache -->|No| Embed[Sentence Transformers<br/>all-MiniLM-L6-v2<br/>Batched + Cached]
-    Cache -->|Yes| CacheHit[Redis Cache Hit]
+    Cache -->|No| Embed[Ollama: nomic-embed-text<br/>Embedding Generation<br/>Batched + Cached]
+    Cache -->|Yes| CacheHit[Cache Hit]
     
     Embed --> VectorDB
     CacheHit --> VectorDB
@@ -174,14 +222,15 @@ flowchart TD
     
     VectorDB --> Complete[✓ Processing Complete<br/>Ready for queries]
     
-    style Chunker fill:#d4edda,stroke:#28a745,stroke-width:2px
-    style CacheHit fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style VectorDB fill:#d1ecf1,stroke:#0c5460,stroke-width:2px
+    style Chunker fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
+    style CacheHit fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style VectorDB fill:#ffffff,stroke:#0c5460,stroke-width:2px,color:#000000
 ```
+</div>
 
-## 📝 Citation Extraction Flow
-
+<div id="diagram-citation" class="diagram-container">
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start[LLM Response Generated] --> Parse[Parse for citation markers<br/>Pattern: cid:chunk_id]
     
@@ -212,14 +261,15 @@ flowchart TD
     
     Final --> UI[Display in UI with<br/>inline clickable links]
     
-    style HTML fill:#d4edda,stroke:#28a745,stroke-width:2px
-    style Dedupe fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style UI fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style HTML fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
+    style Dedupe fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style UI fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
 ```
+</div>
 
-## ⚡ Performance Optimizations
-
+<div id="diagram-performance" class="diagram-container">
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ffffff', 'primaryTextColor':'#000000', 'primaryBorderColor':'#0366d6', 'lineColor':'#0366d6', 'secondaryColor':'#f6f8fa', 'tertiaryColor':'#ffffff'}}}%%
 flowchart TD
     Start[System Startup] --> Check1{Ollama<br/>Running?}
     
@@ -270,12 +320,13 @@ flowchart TD
     
     CacheHit --> Done[✓ Complete]
     
-    style Hot fill:#d4edda,stroke:#28a745,stroke-width:2px
-    style SkipEmbed fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style SkipRet fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style CacheHit fill:#cce5ff,stroke:#004085,stroke-width:2px
-    style SetKeepAlive fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Hot fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
+    style SkipEmbed fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style SkipRet fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style CacheHit fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
+    style SetKeepAlive fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
 ```
+</div>
 
 ## 🛠️ Setup
 
@@ -555,7 +606,3 @@ Interactive API documentation is available at:
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-For issues and questions, please open an issue on GitHub.
