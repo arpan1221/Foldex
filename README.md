@@ -24,7 +24,8 @@ docker-compose up -d
 ## ✨ Features
 
 - 🔐 **Google Drive Integration**: Authenticate and process folders from Google Drive
-- 📄 **Multimodal Processing**: PDFs, text files, Markdown, audio (Whisper), code, and images
+- 📄 **Multimodal Processing**: PDFs, Office documents (Word, Excel, PowerPoint), text files, Markdown, HTML, CSV, audio (Whisper), and images with OCR
+- 🔧 **Unstructured.io Integration**: Advanced document parsing using Unstructured.io for intelligent content extraction with OCR support
 - 🧠 **Intelligent RAG**: Hybrid retrieval with semantic search, keyword matching, and knowledge graphs
 - 💬 **Conversational Interface**: Chat with your documents with precise citations
 - 📊 **Knowledge Graph Visualization**: Interactive graph showing document relationships
@@ -34,6 +35,8 @@ docker-compose up -d
 
 ## 🏗️ Architecture
 
+Foldex uses **Unstructured.io** as the primary document processing engine for PDFs, Office documents (Word, Excel, PowerPoint), text files, HTML, CSV, and images. Unstructured.io provides intelligent content extraction with OCR support for scanned documents and images, title-based chunking for better semantic understanding, and unified processing across multiple document formats.
+
 ```mermaid
 graph TB
     Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication]
@@ -41,14 +44,10 @@ graph TB
     
     Fetch --> FileType{File Type?}
     
-    FileType -->|PDF| PDFProc[PDF Processor<br/>Extract text + structure]
-    FileType -->|Text/MD| TextProc[Text Processor]
-    FileType -->|Code| CodeProc[Code Processor<br/>AST-aware]
+    FileType -->|PDF/Office/Text/HTML/CSV/Images| UnstructuredProc[Unstructured.io Processor<br/>Advanced parsing + OCR<br/>Title-based chunking]
     FileType -->|Audio| AudioProc[Audio Processor<br/>Whisper transcription]
     
-    PDFProc --> Chunker[Smart Chunker<br/>600 tokens, 100 overlap<br/>Metadata preservation]
-    TextProc --> Chunker
-    CodeProc --> Chunker
+    UnstructuredProc --> Chunker[Smart Chunker<br/>600 tokens, 100 overlap<br/>Metadata preservation]
     AudioProc --> Chunker
     
     Chunker --> Embed[Sentence Transformers<br/>Embedding Generation<br/>Batched + Cached]
@@ -157,17 +156,11 @@ flowchart TD
     
     Fetch --> FileType{File Type?}
     
-    FileType -->|PDF| PDFProc[PDF Processor<br/>PyPDF2 + Structure]
-    FileType -->|Text/MD| TextProc[Text Processor]
-    FileType -->|Code| CodeProc[Code Processor<br/>AST-aware]
-    FileType -->|Audio| AudioProc[Audio Processor<br/>Whisper]
-    FileType -->|Image| ImageProc[Image Processor<br/>OCR + Tesseract]
+    FileType -->|PDF/Office/Text/HTML/CSV/Images| UnstructuredProc[Unstructured.io Processor<br/>Advanced parsing + OCR<br/>Title-based chunking]
+    FileType -->|Audio| AudioProc[Audio Processor<br/>Whisper transcription]
     
-    PDFProc --> Chunker[Hierarchical Chunker<br/>600 tokens, 100 overlap<br/>Metadata: file, page, section]
-    TextProc --> Chunker
-    CodeProc --> Chunker
+    UnstructuredProc --> Chunker[Hierarchical Chunker<br/>600 tokens, 100 overlap<br/>Metadata: file, page, section]
     AudioProc --> Chunker
-    ImageProc --> Chunker
     
     Chunker --> Cache{Embedding<br/>Cached?}
     
@@ -428,7 +421,7 @@ Foldex/
 │   ├── app/
 │   │   ├── api/             # API routes
 │   │   ├── services/        # Business logic
-│   │   ├── processors/      # Document processors
+│   │   ├── processors/      # Document processors (Unstructured.io, Audio)
 │   │   ├── rag/             # RAG engine
 │   │   ├── knowledge_graph/ # Knowledge graph
 │   │   └── database/        # Database layer
@@ -460,6 +453,8 @@ Key environment variables (see `.env` for full list):
 - `EMBEDDING_MODEL`: Embedding model (default: `nomic-embed-text:latest`)
 - `SECRET_KEY`: JWT signing key (auto-generated)
 - `OLLAMA_KEEP_ALIVE`: Keep model loaded (-1 = indefinitely)
+- `UNSTRUCTURED_STRATEGY`: Unstructured.io processing strategy (default: `fast`, options: `fast`, `hi_res`, `auto`)
+- `ENABLE_OCR`: Enable OCR for images and scanned documents (default: `true`)
 
 ### Database
 
@@ -559,12 +554,8 @@ Interactive API documentation is available at:
 
 ## 📄 License
 
-[Your License Here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🆘 Support
 
 For issues and questions, please open an issue on GitHub.
-
----
-
-**Built with ❤️ for local-first AI document processing**
