@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     OLLAMA_KEEP_ALIVE: str = Field(
         default="-1", description="Keep model loaded in memory (-1 = indefinitely, 0 = unload immediately)"
     )
+    OLLAMA_NUM_PREDICT: int = Field(
+        default=4096, description="Maximum number of tokens to generate in response (default: 4096 for longer responses)"
+    )
 
     # Embedding Model Configuration
     EMBEDDING_MODEL: str = Field(
@@ -212,6 +215,9 @@ class Settings(BaseSettings):
     )
     ENABLE_OCR: bool = Field(
         default=True, description="Enable OCR processing for scanned documents and images"
+    )
+    ENABLE_RESPONSE_POST_PROCESSING: bool = Field(
+        default=False, description="Enable post-processing of LLM responses (cleaning, formatting). Disabled by default for testing."
     )
 
     # Performance Configuration

@@ -52,15 +52,8 @@ dist-ssr/
 .env.local
 .env.*.local
 
-# Data directories
-data/cache/*
-!data/cache/.gitkeep
-data/vector_db/*
-!data/vector_db/.gitkeep
-data/knowledge_graphs/*
-!data/knowledge_graphs/.gitkeep
-data/sessions/*
-!data/sessions/.gitkeep
+# Data directories (entire folder ignored - created at runtime)
+/data
 
 # Models
 models/embeddings/*

@@ -163,6 +163,7 @@ class OllamaLLM:
                 temperature=self.temperature,
                 timeout=self.timeout,
                 num_ctx=2048,  # Context window optimized for Llama 3.2:3b (2K tokens)
+                num_predict=settings.OLLAMA_NUM_PREDICT,  # Maximum tokens to generate (prevents response truncation)
                 streaming=True,  # Enable token-by-token streaming
                 keep_alive=settings.OLLAMA_KEEP_ALIVE,  # Keep model loaded in memory
             )

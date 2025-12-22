@@ -33,6 +33,7 @@ except ImportError:
         StrOutputParser = None
 
 from app.core.exceptions import ProcessingError
+from app.config.settings import settings
 from app.rag.prompt_management import PromptManager, get_prompt_manager
 from app.rag.llm_chains import OllamaLLM
 from app.rag.ttft_optimization import get_ttft_optimizer
@@ -952,7 +953,15 @@ class RetrievalQAChain:
                     logger.debug("Using StreamingCallbackHandler accumulated response", length=len(handler_answer))
             
             # Clean the response to remove thinking tags and unwanted content
-            cleaned_answer = clean_response(final_result["answer"])
+            # Post-processing is disabled by default for testing (can be enabled via ENABLE_RESPONSE_POST_PROCESSING)
+            if settings.ENABLE_RESPONSE_POST_PROCESSING:
+                cleaned_answer = clean_response(final_result["answer"])
+                logger.debug("Response post-processing enabled, cleaned answer", 
+                           original_length=len(final_result["answer"]),
+                           cleaned_length=len(cleaned_answer))
+            else:
+                cleaned_answer = final_result["answer"]
+                logger.debug("Response post-processing disabled, using raw answer")
 
             # Store LLM response for debug
             if debug_metrics:

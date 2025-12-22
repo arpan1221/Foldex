@@ -9,7 +9,6 @@ from app.processors.base import BaseProcessor
 from app.processors.pdf_processor import PDFProcessor
 from app.processors.text_processor import TextProcessor
 from app.processors.audio_processor import AudioProcessor
-from app.processors.code_processor import CodeProcessor
 from app.core.exceptions import DocumentProcessingError
 from app.utils.file_utils import get_mime_type, validate_file_size
 
@@ -36,7 +35,7 @@ class DocumentProcessor:
         
         UnstructuredProcessor is prioritized for all unstructured document types
         (PDFs, Office docs, text, CSV, HTML, images) to ensure unified processing.
-        Only AudioProcessor and CodeProcessor handle specialized file types.
+        Only AudioProcessor handles specialized file types.
         """
         self.processors: List[BaseProcessor] = []
         
@@ -66,12 +65,9 @@ class DocumentProcessor:
                 TextProcessor(),
             ])
         
-        # Add specialized processors (only for audio and code files)
+        # Add specialized processors (only for audio files)
         # These handle file types that UnstructuredProcessor doesn't process
-        self.processors.extend([
-            AudioProcessor(),
-            CodeProcessor(),
-        ])
+        self.processors.append(AudioProcessor())
         self.logger = structlog.get_logger(__name__)
 
     async def process_file(

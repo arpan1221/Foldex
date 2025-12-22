@@ -381,36 +381,9 @@ class FoldexChunker:
             file_ext = Path(file_path).suffix.lower()
             language = self._detect_language(file_ext)
 
-            # Use AST-based chunking for supported languages
-            supported_ast_languages = ["python", "javascript", "typescript", "js", "ts"]
-            if language in supported_ast_languages:
-                try:
-                    from app.ingestion.ast_code_chunker import ASTCodeChunker
-                    ast_chunker = ASTCodeChunker(
-                        max_chunk_size=self.chunk_size,
-                        min_chunk_size=self.chunk_overlap,
-                    )
-                    all_chunks = ast_chunker.chunk_code(content, file_metadata, language)
-                    
-                    # Add sliding window context
-                    all_chunks = self._add_context_window(all_chunks)
-                    
-                    logger.info(
-                        "AST-based code chunking completed",
-                        file_path=file_path,
-                        language=language,
-                        chunks=len(all_chunks),
-                    )
-                    
-                    return all_chunks
-                except Exception as e:
-                    logger.warning(
-                        "AST-based chunking failed, falling back to text-based",
-                        language=language,
-                        error=str(e),
-                        file_path=file_path,
-                    )
-                    # Fall through to text-based chunking
+            # Code chunking disabled - using text-based chunking for all files
+            # AST-based code chunking removed as it's not currently working
+            # Fall through to text-based chunking
 
             # Use language-specific splitter for other languages or as fallback
             try:

@@ -37,51 +37,12 @@ docker-compose up -d
 
 Foldex uses **Unstructured.io** as the primary document processing engine for PDFs, Office documents (Word, Excel, PowerPoint), text files, HTML, CSV, and images. Unstructured.io provides intelligent content extraction with OCR support for scanned documents and images, title-based chunking for better semantic understanding, and unified processing across multiple document formats. Embeddings are generated using **Ollama's nomic-embed-text** model for local-first vector generation.
 
-<style>
-.diagram-nav {
-  display: flex;
-  gap: 10px;
-  margin: 20px 0;
-  flex-wrap: wrap;
-  border-bottom: 2px solid #e1e4e8;
-  padding-bottom: 10px;
-}
-.diagram-nav a {
-  padding: 8px 16px;
-  text-decoration: none;
-  border-radius: 6px;
-  background-color: #f6f8fa;
-  color: #0366d6;
-  border: 1px solid #d1d5da;
-  transition: all 0.2s;
-  font-weight: 500;
-  display: inline-block;
-}
-.diagram-nav a:hover {
-  background-color: #e1e4e8;
-  border-color: #0366d6;
-}
-.diagram-container {
-  display: none;
-  margin: 20px 0;
-}
-.diagram-container:target {
-  display: block;
-}
-#diagram-architecture {
-  display: block; /* Default visible */
-}
-</style>
+### 📊 Diagram Navigation
 
-<div class="diagram-nav">
-  <a href="#diagram-architecture">🏗️ Architecture</a>
-  <a href="#diagram-dataflow">📊 Data Flow</a>
-  <a href="#diagram-ingestion">🔄 Ingestion Pipeline</a>
-  <a href="#diagram-citation">📝 Citation Flow</a>
-  <a href="#diagram-performance">⚡ Performance</a>
-</div>
+Jump to: [Architecture](#architecture-diagram) | [Data Flow](#data-flow-diagram) | [Ingestion Pipeline](#ingestion-pipeline-diagram) | [Citation Flow](#citation-extraction-flow)
 
-<div id="diagram-architecture" class="diagram-container">
+<a id="architecture-diagram"></a>
+### 🏗️ Architecture Diagram
 
 ```mermaid
 graph TB
@@ -135,9 +96,9 @@ graph TB
     style CachedResult fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
     style VectorDB fill:#ffffff,stroke:#0c5460,stroke-width:2px,color:#000000
 ```
-</div>
 
-<div id="diagram-dataflow" class="diagram-container">
+<a id="data-flow-diagram"></a>
+### 📊 Data Flow Diagram
 
 ```mermaid
 sequenceDiagram
@@ -193,9 +154,9 @@ sequenceDiagram
     
     Frontend-->>User: Display response with inline citations
 ```
-</div>
 
-<div id="diagram-ingestion" class="diagram-container">
+<a id="ingestion-pipeline-diagram"></a>
+### 🔄 Ingestion Pipeline Diagram
 
 ```mermaid
 flowchart TD
@@ -226,9 +187,9 @@ flowchart TD
     style CacheHit fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
     style VectorDB fill:#ffffff,stroke:#0c5460,stroke-width:2px,color:#000000
 ```
-</div>
 
-<div id="diagram-citation" class="diagram-container">
+<a id="citation-extraction-flow"></a>
+### 📝 Citation Extraction Flow
 
 ```mermaid
 flowchart TD
@@ -265,68 +226,6 @@ flowchart TD
     style Dedupe fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
     style UI fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
 ```
-</div>
-
-<div id="diagram-performance" class="diagram-container">
-
-```mermaid
-flowchart TD
-    Start[System Startup] --> Check1{Ollama<br/>Running?}
-    
-    Check1 -->|No| StartOllama[Start Ollama service]
-    Check1 -->|Yes| Check2
-    
-    StartOllama --> Warmup[Run warmup script<br/>Load llama3.2:3b]
-    
-    Warmup --> SetKeepAlive[Set OLLAMA_KEEP_ALIVE=-1<br/>Keep model loaded permanently]
-    
-    Check2{Backend<br/>Running?}
-    
-    Check2 -->|No| StartBackend[uvicorn app.main:app<br/>--reload]
-    Check2 -->|Yes| Ready
-    
-    StartBackend --> Ready[✓ System Ready]
-    
-    Ready --> FirstQuery[First Query Arrives]
-    
-    FirstQuery --> ModelCheck{Model<br/>Loaded?}
-    
-    ModelCheck -->|No| Load[Load model<br/>~2-3s penalty]
-    ModelCheck -->|Yes| Hot[Model hot<br/>~0s overhead]
-    
-    Load --> Process
-    Hot --> Process[Process query]
-    
-    Process --> EmbedCheck{Embedding<br/>Cached?}
-    
-    EmbedCheck -->|Yes| SkipEmbed[Skip embedding<br/>⚡ Saved ~0.5s]
-    EmbedCheck -->|No| GenEmbed[Generate embedding<br/>~0.5s]
-    
-    SkipEmbed --> RetCheck
-    GenEmbed --> RetCheck{Retrieval<br/>Cached?}
-    
-    RetCheck -->|Yes| SkipRet[Skip retrieval<br/>⚡ Saved ~1s]
-    RetCheck -->|No| DoRet[Hybrid retrieval<br/>~1s]
-    
-    SkipRet --> Generate
-    DoRet --> Generate[LLM generate<br/>~5-8s]
-    
-    Generate --> Stream[Stream tokens<br/>First token <2s]
-    
-    Stream --> NextQuery{Next Query<br/>Similar?}
-    
-    NextQuery -->|Yes| CacheHit[Cache hit<br/>⚡ Return in <2s]
-    NextQuery -->|No| FirstQuery
-    
-    CacheHit --> Done[✓ Complete]
-    
-    style Hot fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
-    style SkipEmbed fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
-    style SkipRet fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
-    style CacheHit fill:#ffffff,stroke:#004085,stroke-width:2px,color:#000000
-    style SetKeepAlive fill:#ffffff,stroke:#28a745,stroke-width:2px,color:#000000
-```
-</div>
 
 ## 🛠️ Setup
 
@@ -534,21 +433,6 @@ npm test
 npm test -- --coverage
 ```
 
-## 📊 Performance
-
-- **Folder Indexing**: < 2 minutes for 20 documents (mixed types)
-- **Query Response**: < 15 seconds for complex cross-document queries
-- **First Token**: < 2 seconds (with model warmup)
-- **Memory Usage**: < 4GB peak during indexing
-- **Storage**: < 10MB additional data per 1MB source content
-
-### Performance Features
-
-- **Model Keep-Alive**: LLM model stays loaded in memory (`OLLAMA_KEEP_ALIVE=-1`)
-- **Embedding Cache**: LRU cache for query embeddings (1000 queries, 1 hour TTL)
-- **Query Cache**: Intelligent caching of similar queries
-- **Automatic Warmup**: Models pre-loaded on startup
-
 ## 🔧 Troubleshooting
 
 ### Common Issues
@@ -594,7 +478,7 @@ ffmpeg -version
 
 Interactive API documentation is available at:
 - **Swagger UI**: http://localhost:8000/api/docs
-- **ReDoc**: http://localhost:8000/api/redoc
+
 
 ## 📄 License
 
