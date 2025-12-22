@@ -1,187 +1,426 @@
 # Foldex
 
-**Foldex** is a local-first multimodal RAG (Retrieval-Augmented Generation) system that transforms Google Drive folders into intelligent conversation interfaces. Ask questions, find files, and get insights from your documents using AI.
+**Foldex** is a local-first multimodal RAG (Retrieval-Augmented Generation) system that transforms Google Drive folders into intelligent conversation interfaces. Ask questions, find files, and get insights from your documents using AI—all running locally on your machine.
 
-## Features
+## 🚀 Quick Start
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Foldex
+
+# Run Docker setup (recommended)
+chmod +x setup.sh
+./setup.sh
+
+# Or use Docker Compose directly
+docker-compose up -d
+```
+
+**Access the application:**
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000/api/docs
+
+## ✨ Features
 
 - 🔐 **Google Drive Integration**: Authenticate and process folders from Google Drive
-- 📄 **Multimodal Processing**: Supports PDFs, text files, Markdown, audio (Whisper), and code
+- 📄 **Multimodal Processing**: PDFs, text files, Markdown, audio (Whisper), code, and images
 - 🧠 **Intelligent RAG**: Hybrid retrieval with semantic search, keyword matching, and knowledge graphs
 - 💬 **Conversational Interface**: Chat with your documents with precise citations
 - 📊 **Knowledge Graph Visualization**: Interactive graph showing document relationships
-- 🔒 **Local-First**: All processing and storage happens locally on your machine
-- ⚡ **Real-time Updates**: WebSocket-based progress tracking for folder processing
+- 🔒 **Local-First**: All processing and storage happens locally
+- ⚡ **Real-time Updates**: WebSocket-based progress tracking
+- 🎯 **Citation-Driven**: Every response includes precise source citations
 
-## Architecture
+## 🏗️ Architecture
 
-- **Backend**: FastAPI + SQLite + ChromaDB + Local LLMs (Ollama)
-- **Frontend**: React + TypeScript + Tailwind CSS
-- **Processing**: Audio (Whisper) + Text + PDF + Code analysis
-- **RAG Engine**: Hybrid retrieval (semantic + keyword + knowledge graph)
-- **Storage**: Local-first, no cloud services except Google Drive API
+```mermaid
+graph TB
+    Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication]
+    Auth --> Fetch[Google Drive API<br/>Fetch Files + Metadata]
+    
+    Fetch --> FileType{File Type?}
+    
+    FileType -->|PDF| PDFProc[PDF Processor<br/>Extract text + structure]
+    FileType -->|Text/MD| TextProc[Text Processor]
+    FileType -->|Code| CodeProc[Code Processor<br/>AST-aware]
+    FileType -->|Audio| AudioProc[Audio Processor<br/>Whisper transcription]
+    
+    PDFProc --> Chunker[Smart Chunker<br/>600 tokens, 100 overlap<br/>Metadata preservation]
+    TextProc --> Chunker
+    CodeProc --> Chunker
+    AudioProc --> Chunker
+    
+    Chunker --> Embed[Sentence Transformers<br/>Embedding Generation<br/>Batched + Cached]
+    
+    Embed --> VectorDB[(ChromaDB<br/>Persistent Vector Store)]
+    
+    Query([User Query]) --> ChatService[Chat Service]
+    
+    ChatService --> QCache{Query<br/>Cached?}
+    
+    QCache -->|Yes| CachedResult[Return Cached Result<br/>⚡ Sub-2s response]
+    QCache -->|No| RAGFlow
+    
+    RAGFlow[RAG Service] --> Retrieval[Hybrid Retrieval Strategy]
+    
+    Retrieval --> Semantic[Semantic Search<br/>MMR for diversity]
+    Retrieval --> BM25[BM25 Keyword<br/>Exact term matching]
+    
+    Semantic --> VectorDB
+    BM25 --> VectorDB
+    
+    Semantic --> Ensemble[Ensemble Retriever<br/>Weights: 0.6 semantic, 0.4 BM25]
+    BM25 --> Ensemble
+    
+    Ensemble --> Rerank[Cross-encoder Re-ranking<br/>ms-marco-MiniLM-L-6-v2]
+    
+    Rerank --> TopK[Top 5 Chunks<br/>Grouped by source file]
+    
+    TopK --> OllamaLLM[Ollama: llama3.2:3b<br/>Streaming Enabled]
+    
+    OllamaLLM --> Stream[Real-time Token Stream<br/>WebSocket to client]
+    OllamaLLM --> Citations[Citation Extraction<br/>Parse inline markers]
+    
+    Citations --> UI[Client UI<br/>Progressive display]
+    Stream --> UI
+    
+    style ChatService fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style RAGFlow fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style CachedResult fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style VectorDB fill:#d1ecf1,stroke:#0c5460,stroke-width:2px
+```
 
-## Prerequisites
+## 📊 Data Flow
 
-- **Python 3.10+**
-- **Node.js 18+** and npm
-- **Docker** (optional, for ChromaDB and Ollama)
-- **Ollama** (for local LLM inference)
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend as React Frontend
+    participant API as FastAPI Backend
+    participant Chat as ChatService
+    participant RAG as RAGService
+    participant Retriever as Hybrid Retriever
+    participant ChromaDB
+    participant Ollama as Ollama (llama3.2:3b)
+    participant Citations as Citation Utils
+    
+    User->>Frontend: Paste Drive folder URL
+    Frontend->>API: POST /api/v1/folders/process
+    API->>API: Authenticate with Google
+    API->>API: Download & chunk files
+    API->>ChromaDB: Store chunks + embeddings
+    ChromaDB-->>API: ✓ Ingested
+    API-->>Frontend: ✓ Ready
+    
+    User->>Frontend: Ask question
+    Frontend->>API: WebSocket /ws/query
+    API->>Chat: process_query()
+    
+    Chat->>RAG: query()
+    RAG->>Retriever: retrieve(query, k=5)
+    
+    Retriever->>ChromaDB: Semantic search (MMR)
+    ChromaDB-->>Retriever: Top 20 candidates
+    
+    Retriever->>ChromaDB: BM25 keyword search
+    ChromaDB-->>Retriever: Top 20 candidates
+    
+    Retriever->>Retriever: Ensemble + re-rank
+    Retriever-->>RAG: Top 5 chunks
+    
+    RAG->>Ollama: Generate (streaming=true)
+    
+    loop For each token
+        Ollama-->>RAG: Token
+        RAG-->>Chat: Token
+        Chat-->>Frontend: Stream token
+    end
+    
+    Ollama-->>RAG: Complete response
+    
+    RAG->>Citations: extract_citations(response, chunks)
+    Citations-->>RAG: Citation list
+    
+    RAG-->>Chat: Response + citations
+    Chat-->>Frontend: Citations
+    
+    Frontend-->>User: Display response with inline citations
+```
+
+## 🔄 Ingestion Pipeline
+
+```mermaid
+flowchart TD
+    Start([User Pastes Drive Folder URL]) --> Auth[Google OAuth2<br/>Authentication Layer]
+    Auth --> Fetch[Google Drive API<br/>File Metadata + Content]
+    
+    Fetch --> FileType{File Type?}
+    
+    FileType -->|PDF| PDFProc[PDF Processor<br/>PyPDF2 + Structure]
+    FileType -->|Text/MD| TextProc[Text Processor]
+    FileType -->|Code| CodeProc[Code Processor<br/>AST-aware]
+    FileType -->|Audio| AudioProc[Audio Processor<br/>Whisper]
+    FileType -->|Image| ImageProc[Image Processor<br/>OCR + Tesseract]
+    
+    PDFProc --> Chunker[Hierarchical Chunker<br/>600 tokens, 100 overlap<br/>Metadata: file, page, section]
+    TextProc --> Chunker
+    CodeProc --> Chunker
+    AudioProc --> Chunker
+    ImageProc --> Chunker
+    
+    Chunker --> Cache{Embedding<br/>Cached?}
+    
+    Cache -->|No| Embed[Sentence Transformers<br/>all-MiniLM-L6-v2<br/>Batched + Cached]
+    Cache -->|Yes| CacheHit[Redis Cache Hit]
+    
+    Embed --> VectorDB
+    CacheHit --> VectorDB
+    
+    VectorDB[(ChromaDB<br/>Persistent Vector Store<br/>with rich metadata)]
+    
+    VectorDB --> Complete[✓ Processing Complete<br/>Ready for queries]
+    
+    style Chunker fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style CacheHit fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style VectorDB fill:#d1ecf1,stroke:#0c5460,stroke-width:2px
+```
+
+## 📝 Citation Extraction Flow
+
+```mermaid
+flowchart TD
+    Start[LLM Response Generated] --> Parse[Parse for citation markers<br/>Pattern: cid:chunk_id]
+    
+    Parse --> Found{Markers<br/>Found?}
+    
+    Found -->|No| NoCite[No citations<br/>Return response as-is]
+    Found -->|Yes| Extract[Extract chunk IDs<br/>e.g., cid:abc123]
+    
+    Extract --> Lookup[Lookup chunk metadata<br/>from retrieved chunks]
+    
+    Lookup --> Meta{Metadata<br/>Found?}
+    
+    Meta -->|No| Unknown[Replace with<br/>source unknown]
+    Meta -->|Yes| Format[Format citation link]
+    
+    Format --> HTML[Generate HTML:<br/>sup>a href=drive_url<br/>filename, page X/a>/sup>]
+    
+    HTML --> Replace[Replace marker with link]
+    Unknown --> Replace
+    
+    Replace --> More{More<br/>Markers?}
+    
+    More -->|Yes| Extract
+    More -->|No| Dedupe[Deduplicate citations<br/>by file + page]
+    
+    Dedupe --> Final[Return:<br/>- Formatted response<br/>- Citation list]
+    NoCite --> Final
+    
+    Final --> UI[Display in UI with<br/>inline clickable links]
+    
+    style HTML fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style Dedupe fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style UI fill:#d4edda,stroke:#28a745,stroke-width:2px
+```
+
+## ⚡ Performance Optimizations
+
+```mermaid
+flowchart TD
+    Start[System Startup] --> Check1{Ollama<br/>Running?}
+    
+    Check1 -->|No| StartOllama[Start Ollama service]
+    Check1 -->|Yes| Check2
+    
+    StartOllama --> Warmup[Run warmup script<br/>Load llama3.2:3b]
+    
+    Warmup --> SetKeepAlive[Set OLLAMA_KEEP_ALIVE=-1<br/>Keep model loaded permanently]
+    
+    Check2{Backend<br/>Running?}
+    
+    Check2 -->|No| StartBackend[uvicorn app.main:app<br/>--reload]
+    Check2 -->|Yes| Ready
+    
+    StartBackend --> Ready[✓ System Ready]
+    
+    Ready --> FirstQuery[First Query Arrives]
+    
+    FirstQuery --> ModelCheck{Model<br/>Loaded?}
+    
+    ModelCheck -->|No| Load[Load model<br/>~2-3s penalty]
+    ModelCheck -->|Yes| Hot[Model hot<br/>~0s overhead]
+    
+    Load --> Process
+    Hot --> Process[Process query]
+    
+    Process --> EmbedCheck{Embedding<br/>Cached?}
+    
+    EmbedCheck -->|Yes| SkipEmbed[Skip embedding<br/>⚡ Saved ~0.5s]
+    EmbedCheck -->|No| GenEmbed[Generate embedding<br/>~0.5s]
+    
+    SkipEmbed --> RetCheck
+    GenEmbed --> RetCheck{Retrieval<br/>Cached?}
+    
+    RetCheck -->|Yes| SkipRet[Skip retrieval<br/>⚡ Saved ~1s]
+    RetCheck -->|No| DoRet[Hybrid retrieval<br/>~1s]
+    
+    SkipRet --> Generate
+    DoRet --> Generate[LLM generate<br/>~5-8s]
+    
+    Generate --> Stream[Stream tokens<br/>First token <2s]
+    
+    Stream --> NextQuery{Next Query<br/>Similar?}
+    
+    NextQuery -->|Yes| CacheHit[Cache hit<br/>⚡ Return in <2s]
+    NextQuery -->|No| FirstQuery
+    
+    CacheHit --> Done[✓ Complete]
+    
+    style Hot fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style SkipEmbed fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style SkipRet fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style CacheHit fill:#cce5ff,stroke:#004085,stroke-width:2px
+    style SetKeepAlive fill:#d4edda,stroke:#28a745,stroke-width:2px
+```
+
+## 🛠️ Setup
+
+### Prerequisites
+
+- **Docker** and **Docker Compose** (recommended)
+- **Python 3.10+** (for local development)
+- **Node.js 18+** (for local development)
+- **ffmpeg** (required for audio processing)
 - **Google OAuth2 Credentials** (for Google Drive access)
-- **ffmpeg** (required for audio processing and video audio extraction)
 
-### System Dependencies
+### Docker Setup (Recommended)
 
-Install ffmpeg (required for audio transcription and video audio extraction):
+```bash
+# Run the setup script
+chmod +x setup.sh
+./setup.sh
+```
+
+The setup script will:
+1. ✅ Check Docker and Docker Compose installation
+2. ✅ Create necessary directories
+3. ✅ Generate `.env` file with default settings
+4. ✅ Pull required Docker images
+5. ✅ Build backend and frontend containers
+6. ✅ Start all services (ChromaDB, Ollama, Backend, Frontend)
+7. ✅ Pull and warm up the LLM model
+8. ✅ Verify all services are healthy
+
+### Manual Setup
+
+<details>
+<summary>Click to expand manual setup instructions</summary>
+
+#### 1. Install System Dependencies
 
 ```bash
 # macOS
 brew install ffmpeg
 
 # Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install ffmpeg
+sudo apt-get update && sudo apt-get install ffmpeg
 
 # Windows
 # Download from https://ffmpeg.org/download.html
-# Or use chocolatey: choco install ffmpeg
 ```
 
-## Quick Start
-
-### 1. Clone the Repository
+#### 2. Clone and Setup
 
 ```bash
 git clone <repository-url>
 cd Foldex
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install backend dependencies
+cd backend
+pip install -r requirements/base.txt
+cd ..
+
+# Install frontend dependencies
+cd frontend
+npm install
+cd ..
 ```
 
-### 2. Run Setup Script
+#### 3. Configure Environment
+
+Create a `.env` file in the project root:
 
 ```bash
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-```
-
-This will:
-- Create Python virtual environment
-- Install backend and frontend dependencies
-- Create necessary directories
-- Generate `.env` file with default settings
-
-### 3. Configure Environment
-
-Edit `.env` file and add your Google OAuth2 credentials:
-
-```bash
+# Google Drive API (Required)
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3000/auth/callback
+
+# Local LLM Configuration
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_KEEP_ALIVE=-1
+
+# Embedding Model
+EMBEDDING_MODEL=nomic-embed-text:latest
+EMBEDDING_TYPE=ollama
+
+# Security
+SECRET_KEY=$(openssl rand -hex 32)
 ```
 
-**Optional: LangSmith Observability**
+#### 4. Start Services
 
-For production monitoring and debugging, configure LangSmith tracing:
-
+**Start Ollama:**
 ```bash
-# Get your API key from https://smith.langchain.com
-LANGCHAIN_API_KEY=your-langsmith-api-key
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=foldex
-```
-
-This enables full observability of the LangGraph multi-document synthesis pipeline.
-
-### 4. Download ML Models
-
-```bash
-source venv/bin/activate
-python scripts/download_models.py
-```
-
-This downloads:
-- Sentence transformer model for embeddings
-- Whisper model for audio transcription
-
-### 5. Start Ollama (for Local LLM)
-
-```bash
-# Install Ollama: https://ollama.ai
 ollama serve
-
-# In another terminal, pull the model:
-ollama pull llama3.2
+ollama pull llama3.2:3b
+ollama pull nomic-embed-text:latest
 ```
 
-### 6. Start Development Servers
-
-**Option A: Manual Start**
-
+**Start Backend:**
 ```bash
-# Terminal 1: Backend
 cd backend
 source ../venv/bin/activate
 uvicorn app.main:app --reload
+```
 
-# Terminal 2: Frontend
+**Start Frontend:**
+```bash
 cd frontend
 npm run dev
 ```
 
-**Option B: Docker Compose**
+</details>
 
-```bash
-docker-compose up -d
-```
+## 📖 Usage
 
-This starts:
-- ChromaDB (vector database) on port 8001
-- Backend API on port 8000
-- Frontend on port 3000
-- Ollama on port 11434
+### 1. Authenticate with Google Drive
 
-### 7. Access the Application
+1. Click "Sign in with Google" on the landing page
+2. Grant permissions to access Google Drive
+3. You'll be redirected back to the application
 
-Open your browser and navigate to:
-- **Frontend**: http://localhost:3000
-- **Backend API Docs**: http://localhost:8000/api/docs
+### 2. Process a Folder
 
-## Development Setup
+1. Paste a Google Drive folder URL
+2. Click "Process Folder"
+3. Monitor progress via WebSocket updates
+4. Wait for processing to complete
 
-### Backend Development
+### 3. Chat with Your Documents
 
-```bash
-# Activate virtual environment
-source venv/bin/activate
+1. Navigate to the chat interface
+2. Ask questions about your documents
+3. View citations and source references
+4. Explore the knowledge graph visualization
 
-# Install development dependencies
-cd backend
-pip install -r requirements/dev.txt
-
-# Run tests
-pytest tests/ --cov=app
-
-# Run with hot reload
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Frontend Development
-
-```bash
-cd frontend
-
-# Install dependencies
-npm install
-
-# Run development server
-npm run dev
-
-# Run tests
-npm test
-
-# Build for production
-npm run build
-```
-
-## Project Structure
+## 🏛️ Project Structure
 
 ```
 Foldex/
@@ -209,17 +448,18 @@ Foldex/
 └── README.md
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 ### Environment Variables
 
-Key environment variables (see `.env.example` for full list):
+Key environment variables (see `.env` for full list):
 
 - `GOOGLE_CLIENT_ID`: Google OAuth2 client ID
 - `GOOGLE_CLIENT_SECRET`: Google OAuth2 client secret
-- `OLLAMA_MODEL`: Local LLM model name (default: `llama3.2`)
-- `EMBEDDING_MODEL`: Embedding model (default: `sentence-transformers/all-mpnet-base-v2`)
-- `SECRET_KEY`: JWT signing key (generate with `openssl rand -hex 32`)
+- `OLLAMA_MODEL`: Local LLM model name (default: `llama3.2:3b`)
+- `EMBEDDING_MODEL`: Embedding model (default: `nomic-embed-text:latest`)
+- `SECRET_KEY`: JWT signing key (auto-generated)
+- `OLLAMA_KEEP_ALIVE`: Keep model loaded (-1 = indefinitely)
 
 ### Database
 
@@ -229,35 +469,7 @@ Foldex uses:
 
 Both are automatically initialized on first run.
 
-## Usage
-
-### 1. Authenticate with Google Drive
-
-1. Click "Sign in with Google" on the landing page
-2. Grant permissions to access Google Drive
-3. You'll be redirected back to the application
-
-### 2. Process a Folder
-
-1. Paste a Google Drive folder URL
-2. Click "Process Folder"
-3. Monitor progress via WebSocket updates
-4. Wait for processing to complete
-
-### 3. Chat with Your Documents
-
-1. Navigate to the chat interface
-2. Ask questions about your documents
-3. View citations and source references
-4. Explore the knowledge graph visualization
-
-## API Documentation
-
-Interactive API documentation is available at:
-- **Swagger UI**: http://localhost:8000/api/docs
-- **ReDoc**: http://localhost:8000/api/redoc
-
-## Testing
+## 🧪 Testing
 
 ### Backend Tests
 
@@ -276,7 +488,22 @@ npm test
 npm test -- --coverage
 ```
 
-## Troubleshooting
+## 📊 Performance
+
+- **Folder Indexing**: < 2 minutes for 20 documents (mixed types)
+- **Query Response**: < 15 seconds for complex cross-document queries
+- **First Token**: < 2 seconds (with model warmup)
+- **Memory Usage**: < 4GB peak during indexing
+- **Storage**: < 10MB additional data per 1MB source content
+
+### Performance Features
+
+- **Model Keep-Alive**: LLM model stays loaded in memory (`OLLAMA_KEEP_ALIVE=-1`)
+- **Embedding Cache**: LRU cache for query embeddings (1000 queries, 1 hour TTL)
+- **Query Cache**: Intelligent caching of similar queries
+- **Automatic Warmup**: Models pre-loaded on startup
+
+## 🔧 Troubleshooting
 
 ### Common Issues
 
@@ -290,7 +517,8 @@ FRONTEND_PORT=3001
 **2. Ollama Connection Failed**
 ```bash
 # Ensure Ollama is running
-ollama serve
+docker-compose ps ollama
+# Or locally: ollama serve
 
 # Check if model is available
 ollama list
@@ -301,166 +529,42 @@ ollama list
 - Ensure redirect URI matches: `http://localhost:3000/auth/callback`
 - Check OAuth consent screen configuration in Google Cloud Console
 
-**4. Model Download Fails**
-```bash
-# Manually download models
-python scripts/download_models.py
-
-# Or set custom model paths in .env
-EMBEDDING_MODEL=your-custom-model
-```
-
-**5. Database Errors**
+**4. Database Errors**
 ```bash
 # Reset database (WARNING: Deletes all data)
-rm -rf data/foldex.db data/vector_db
+docker-compose down -v
 # Restart application to recreate
+docker-compose up -d
 ```
 
-**6. Audio Processing Errors**
+**5. Audio Processing Errors**
 ```bash
 # Ensure ffmpeg is installed
 ffmpeg -version
-
-# If not installed, see Prerequisites section above
-# Audio files (.m4a, .mp3, .wav) and video files with audio (.mp4) require ffmpeg
-# for audio extraction and processing
+# If not installed, see Prerequisites section
 ```
 
-## Performance
+## 📚 API Documentation
 
-- **Folder Indexing**: < 2 minutes for 20 documents (mixed types)
-- **Query Response**: < 15 seconds for complex cross-document queries
-- **Memory Usage**: < 4GB peak during indexing
-- **Storage**: < 10MB additional data per 1MB source content
+Interactive API documentation is available at:
+- **Swagger UI**: http://localhost:8000/api/docs
+- **ReDoc**: http://localhost:8000/api/redoc
 
-### Performance Optimizations
-
-Foldex includes several optimizations to reduce latency and improve response times:
-
-#### 1. Model Keep-Alive Configuration
-
-The LLM model (llama3.2:3b) is kept loaded in memory to eliminate cold-start latency:
-
-```bash
-# In docker-compose.yml or .env
-OLLAMA_KEEP_ALIVE=-1  # Keep model loaded indefinitely
-```
-
-This ensures the model is always ready for inference, reducing first-token latency from ~5-10 seconds to <1 second.
-
-#### 2. Query Embedding Cache
-
-An intelligent LRU cache stores query embeddings to avoid redundant embedding generation:
-
-- **Cache Size**: 1000 queries (configurable via `EMBEDDING_CACHE_MAX_SIZE`)
-- **TTL**: 1 hour (configurable via `EMBEDDING_CACHE_TTL`)
-- **Hit Rate**: Typically 30-50% for repeated queries
-- **Latency Reduction**: ~200-500ms per cached query
-
-The cache automatically:
-- Normalizes queries (lowercase, strip whitespace) for better hit rates
-- Evicts least-recently-used entries when full
-- Expires entries after TTL
-- Provides statistics via API endpoint
-
-#### 3. Automatic Model Warmup
-
-On startup, the application automatically:
-- Pre-loads the LLM model into memory
-- Initializes TTFT (Time-To-First-Token) optimizer
-- Warms up embedding models
-- Prepares caches and connection pools
-
-This eliminates cold-start delays for the first user request.
-
-#### 4. Manual Warmup Endpoints
-
-For fine-grained control, use these API endpoints:
-
-```bash
-# Warmup LLM model
-curl -X POST http://localhost:8000/api/v1/warmup/model
-
-# Initialize TTFT optimizer
-curl -X POST http://localhost:8000/api/v1/warmup/ttft
-
-# Get cache statistics
-curl http://localhost:8000/api/v1/warmup/cache/stats
-
-# Clear embedding cache
-curl -X POST http://localhost:8000/api/v1/warmup/cache/clear
-
-# Cleanup expired cache entries
-curl -X POST http://localhost:8000/api/v1/warmup/cache/cleanup
-```
-
-#### Configuration
-
-Optimize performance by adjusting these settings in `.env`:
-
-```bash
-# Model Keep-Alive
-OLLAMA_KEEP_ALIVE=-1              # -1 = keep loaded, 0 = unload immediately
-
-# Embedding Cache
-EMBEDDING_CACHE_ENABLED=true      # Enable/disable cache
-EMBEDDING_CACHE_MAX_SIZE=1000     # Maximum cached queries
-EMBEDDING_CACHE_TTL=3600          # Cache TTL in seconds (1 hour)
-
-# Model Warmup
-ENABLE_MODEL_WARMUP=true          # Warmup on startup
-ENABLE_TTFT_OPTIMIZATION=true     # Enable TTFT optimizer
-```
-
-#### Performance Monitoring
-
-Monitor cache performance via the stats endpoint:
-
-```bash
-curl http://localhost:8000/api/v1/warmup/cache/stats
-```
-
-Response:
-```json
-{
-  "status": "success",
-  "cache_stats": {
-    "size": 245,
-    "max_size": 1000,
-    "hits": 1523,
-    "misses": 782,
-    "hit_rate": 66.08,
-    "ttl_seconds": 3600
-  }
-}
-```
-
-#### Expected Latency Improvements
-
-With all optimizations enabled:
-
-- **First Query (Cold Start)**: ~8-12 seconds → ~2-4 seconds
-- **Subsequent Queries (Warm)**: ~5-8 seconds → ~1-3 seconds
-- **Cached Queries**: ~5-8 seconds → ~0.5-2 seconds
-- **Model Load Time**: ~5-10 seconds → 0 seconds (pre-loaded)
-
-## Contributing
+## 🤝 Contributing
 
 1. Follow the coding standards in `Claude.md`
 2. Write tests for new features
 3. Update `CHANGELOG.md` for significant changes
 4. Use conventional commits
 
-## License
+## 📄 License
 
 [Your License Here]
 
-## Support
+## 🆘 Support
 
 For issues and questions, please open an issue on GitHub.
 
 ---
 
 **Built with ❤️ for local-first AI document processing**
-

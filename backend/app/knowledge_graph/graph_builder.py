@@ -31,6 +31,8 @@ except ImportError:
 
 from app.core.exceptions import ProcessingError
 from app.rag.llm_chains import OllamaLLM
+from app.knowledge_graph.entity_extractor import EntityExtractor
+from app.services.document_summarizer import get_document_summarizer
 
 logger = structlog.get_logger(__name__)
 
@@ -52,6 +54,8 @@ class FoldexKnowledgeGraph:
         self.graph = nx.DiGraph()  # Directed graph
         self.llm = llm or OllamaLLM()
         self._entity_cache: Dict[str, Dict] = {}  # Cache entity extractions
+        self.entity_extractor = EntityExtractor()  # For NER fallback
+        self.document_summarizer = get_document_summarizer()  # For document context
     
     async def build_from_documents(self, chunks: List[Document]) -> nx.DiGraph:
         """Extract entities and relationships from documents (async to avoid blocking).
@@ -89,8 +93,48 @@ class FoldexKnowledgeGraph:
         # Extract entities and relationships per document (async)
         for file_name, content_list in docs.items():
             try:
-                # Use first 5 chunks to avoid token limits
-                combined_content = "\n\n".join(content_list[:5])
+                # Select best chunks for extraction (intelligent selection, not just first N)
+                # Score chunks by informativeness and select top ones up to 4000 chars
+                scored_chunks = []
+                for i, chunk in enumerate(content_list):
+                    score = 0
+                    # Entity density (capitalized words, proper nouns)
+                    capitalized = len(re.findall(r'\b[A-Z][a-z]{2,}\b', chunk))
+                    all_caps = len(re.findall(r'\b[A-Z]{2,}\b', chunk))
+                    score += int((capitalized + all_caps) * 0.3)
+                    # Vocabulary diversity
+                    words = chunk.lower().split()
+                    unique_words = len(set(words))
+                    total_words = len(words)
+                    if total_words > 0:
+                        diversity = unique_words / total_words
+                        score += int(diversity * 10.0)
+                    # Content density (alphabetic vs symbols)
+                    alpha_chars = sum(1 for c in chunk if c.isalpha())
+                    total_chars = len(chunk.strip())
+                    if total_chars > 0:
+                        density = alpha_chars / total_chars
+                        if density > 0.6:
+                            score += int((density - 0.6) * 20)
+                    scored_chunks.append((score, i, chunk))
+                
+                # Sort by score and select top chunks up to 4000 chars
+                scored_chunks.sort(reverse=True, key=lambda x: x[0])
+                selected_chunks = []
+                total_length = 0
+                for score, idx, chunk in scored_chunks:
+                    if total_length + len(chunk) <= 4000:
+                        selected_chunks.append((idx, chunk))
+                        total_length += len(chunk)
+                    elif total_length < 2800:  # If under 70% of target, add one more
+                        selected_chunks.append((idx, chunk))
+                        total_length += len(chunk)
+                    else:
+                        break
+                
+                # Sort by original order and combine
+                selected_chunks.sort(key=lambda x: x[0])
+                combined_content = "\n\n".join(chunk for _, chunk in selected_chunks)
                 
                 entities_and_rels = await self._extract_graph_data(
                     file_name,
@@ -121,7 +165,12 @@ class FoldexKnowledgeGraph:
         
         return self.graph
     
-    async def _extract_graph_data(self, file_name: str, content: str) -> Dict[str, Any]:
+    async def _extract_graph_data(
+        self, 
+        file_name: str, 
+        content: str,
+        document_summary: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Use LLM to extract entities and relationships (async to avoid blocking).
         
         Args:
@@ -166,30 +215,44 @@ class FoldexKnowledgeGraph:
             )
             return {"entities": [], "relationships": []}
         
-        prompt = f"""Analyze this document and extract entities and relationships.
+        # Improved prompt with better LLM refusal handling and domain adaptability
+        summary_context = ""
+        if document_summary:
+            summary_context = f"\n\nDocument Summary (for context): {document_summary}\n"
+        
+        prompt = f"""You are an information extraction system. Extract entities and relationships from this document.
 
-Document: {file_name}
+Document: {file_name}{summary_context}
 Content: {content_preview}
 
-Extract relevant entities and relationships based on the document's content. The entities and relationships should be appropriate for the document type (e.g., for research papers extract authors and methods; for code files extract functions and classes; for data files extract key datasets and fields).
+TASK: Extract ALL entities and relationships mentioned in the content. This is a factual extraction task - extract what is actually stated, regardless of document type. Adapt entity types to match the document's domain.
 
-Extract:
-1. People (names of individuals mentioned: authors, researchers, team members, etc.)
-2. Methods/Techniques (algorithms, approaches, methodologies, processes mentioned)
-3. Concepts/Ideas (key topics, theories, principles, domains discussed)
-4. Tools/Resources (datasets, software, platforms, technologies, systems used or mentioned)
-5. Organizations/Institutions (companies, universities, agencies, etc.)
-6. Other relevant entities specific to this document's domain
+Entity Types (adapt to document type):
+- person: People mentioned (names of individuals, authors, creators, participants, etc.)
+- method: Methods, techniques, processes, approaches (adapt to domain: algorithms, procedures, workflows, methodologies, etc.)
+- concept: Ideas, theories, principles, topics, themes, concepts discussed
+- tool: Tools, software, platforms, datasets, resources, technologies used or mentioned
+- organization: Companies, institutions, universities, agencies, groups, organizations
+- location: Places, locations, addresses (if relevant to document type)
+- event: Events, meetings, occurrences (if relevant to document type)
 
-Also extract relationships between entities, such as:
-- authored, created, wrote (person -> document)
-- uses, implements, applies (document/entity -> method/tool)
-- contains, includes, references (document -> entity)
-- type_of, instance_of, related_to (entity -> entity)
-- works_with, collaborates_with (person -> person)
+Relationship Types (adapt to context):
+- authored/created/wrote: person -> document (who created/wrote it)
+- discusses/mentions/contains: document -> entity (what the document is about)
+- uses/employs/implements: document/entity -> tool/method (what is used)
+- related_to/associated_with: entity -> entity (how entities relate)
+- works_with/collaborates_with: person -> person
+- located_in/part_of: entity -> location/organization
+- occurs_at/happens_at: event -> location/time
 - Any other relevant relationships based on the content
 
-Output ONLY valid JSON (no markdown, no code blocks):
+IMPORTANT:
+- Adapt entity and relationship extraction to the document's domain (research papers, legal docs, medical records, code, audio transcripts, etc.)
+- Extract ALL entities you can identify from the content
+- Extract relationships between entities based on what is stated in the content
+- This is NOT a conversation - you are performing factual extraction from the provided content
+
+Output ONLY valid JSON (no markdown, no code blocks, no explanations):
 {{
     "entities": [
         {{"type": "person", "name": "Entity Name"}},
@@ -203,7 +266,7 @@ Output ONLY valid JSON (no markdown, no code blocks):
     ]
 }}
 
-JSON only:"""
+Output JSON now:"""
         
         try:
             # Use async invoke to avoid blocking the event loop
@@ -236,11 +299,12 @@ JSON only:"""
             
             # Check if response indicates refusal or no content
             refusal_patterns = [
-                "I can't help", "I cannot help", "I cannot", "I can not",
-                "I'm unable", "I am unable", "There is no", "no information",
-                "I don't have", "I do not have"
+                "i can't help", "i cannot help", "i cannot", "i can not",
+                "i'm unable", "i am unable", "there is no", "no information",
+                "i don't have", "i do not have", "i can help you", "i notice"
             ]
-            is_refusal = any(pattern.lower() in content_str.lower() for pattern in refusal_patterns) if content_str else True
+            content_lower = content_str.lower() if content_str else ""
+            is_refusal = any(pattern in content_lower for pattern in refusal_patterns) if content_str else True
             
             if not content_str or is_refusal:
                 logger.warning(
@@ -248,23 +312,8 @@ JSON only:"""
                     file_name=file_name,
                     response_preview=content_str[:200] if content_str else "empty response"
                 )
-                # Try fallback: extract names from filename
-                fallback_entities = []
-                fallback_relationships = []
-                name_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'
-                potential_names = re.findall(name_pattern, file_name.replace('_', ' ').replace('-', ' '))
-                for name in potential_names[:3]:
-                    if len(name.split()) >= 2:
-                        fallback_entities.append({"type": "person", "name": name})
-                        fallback_relationships.append({
-                            "source": name,
-                            "target": file_name,
-                            "relation": "authored"
-                        })
-                if fallback_entities:
-                    logger.info("Created fallback entities from filename", file_name=file_name)
-                    return {"entities": fallback_entities, "relationships": fallback_relationships}
-                return {"entities": [], "relationships": []}
+                # Retry with simpler prompt and different approach
+                return await self._retry_extraction_with_fallback(file_name, content_preview)
             
             # Parse JSON
             try:
@@ -328,12 +377,147 @@ JSON only:"""
             # Log with exception type if error message is empty
             error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
             logger.debug(
-                "Entity extraction failed (non-fatal, continuing)",
+                    "Entity extraction failed (non-fatal, continuing)",
                 file_name=file_name,
                 error=error_msg,
                 error_type=type(e).__name__,
             )
             return {"entities": [], "relationships": []}
+    
+    async def _retry_extraction_with_fallback(
+        self, 
+        file_name: str, 
+        content: str,
+        attempt: int = 0
+    ) -> Dict[str, Any]:
+        """Retry extraction with simpler prompt and fallback strategies.
+        
+        Args:
+            file_name: File name
+            content: Document content
+            attempt: Retry attempt number
+            
+        Returns:
+            Dictionary with entities and relationships
+        """
+        if attempt >= 2:  # Max 3 attempts (0, 1, 2)
+            logger.debug("Max retry attempts reached, returning empty", file_name=file_name)
+            return {"entities": [], "relationships": []}
+        
+        # Simpler prompt for retry (completely domain-agnostic)
+        if attempt == 0:
+            retry_prompt = f"""Extract entities from this document as JSON. This is factual extraction from the provided content.
+
+Document: {file_name}
+Content: {content[:3000]}
+
+Extract entities (person, method, concept, tool, organization) and relationships (authored, discusses, uses, related_to). Adapt types to the document's domain.
+
+Output JSON only: {{"entities": [{{"type": "...", "name": "..."}}], "relationships": [{{"source": "...", "target": "...", "relation": "..."}}]}}"""
+        else:
+            # Final attempt - minimal prompt
+            retry_prompt = f"""List entities from: {file_name}
+
+{content[:2000]}
+
+JSON: {{"entities": [{{"type": "person|method|concept|tool|organization", "name": "..."}}], "relationships": []}}"""
+        
+        try:
+            response = await asyncio.wait_for(
+                self.llm.get_llm().ainvoke(retry_prompt),
+                timeout=60.0
+            )
+            
+            content_str = response.content.strip() if hasattr(response, "content") else str(response).strip()
+            
+            # Clean response
+            if content_str.startswith("```json"):
+                content_str = content_str[7:]
+            if content_str.startswith("```"):
+                content_str = content_str[3:]
+            if content_str.endswith("```"):
+                content_str = content_str[:-3]
+            content_str = content_str.strip()
+            
+            # Extract JSON
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content_str, re.DOTALL)
+            if json_match:
+                content_str = json_match.group(0)
+            
+            # Check for refusals
+            refusal_patterns = [
+                "i can't help", "i cannot help", "i'm unable", "i am unable",
+                "i don't have", "i do not have", "no information", "there is no"
+            ]
+            is_refusal = any(pattern in content_str.lower() for pattern in refusal_patterns) if content_str else True
+            
+            if is_refusal or not content_str:
+                # Try next attempt
+                return await self._retry_extraction_with_fallback(file_name, content, attempt + 1)
+            
+            # Parse JSON
+            try:
+                graph_data = json.loads(content_str)
+                if not isinstance(graph_data, dict):
+                    raise ValueError("Response is not a dictionary")
+                
+                if "entities" not in graph_data:
+                    graph_data["entities"] = []
+                if "relationships" not in graph_data:
+                    graph_data["relationships"] = []
+                
+                logger.info("Retry extraction succeeded", file_name=file_name, attempt=attempt + 1)
+                return graph_data
+            except json.JSONDecodeError:
+                # Try next attempt
+                return await self._retry_extraction_with_fallback(file_name, content, attempt + 1)
+                
+        except Exception as e:
+            logger.debug(f"Retry extraction failed (attempt {attempt})", file_name=file_name, error=str(e))
+            if attempt < 2:
+                return await self._retry_extraction_with_fallback(file_name, content, attempt + 1)
+            
+            # Final fallback: Use NER extraction (domain-agnostic)
+            try:
+                logger.debug("Using NER fallback extraction", file_name=file_name)
+                ner_entities = await self.entity_extractor.extract_entities(content[:2000])
+                
+                # Convert NER entities to graph format
+                graph_entities = []
+                seen = set()
+                for ent in ner_entities:
+                    # Map spaCy types to graph types (generic mapping)
+                    type_mapping = {
+                        'PERSON': 'person',
+                        'ORG': 'organization',
+                        'GPE': 'organization',  # Geographic -> organization
+                        'MONEY': 'concept',
+                        'DATE': 'concept',
+                        'EVENT': 'event',
+                        'LAW': 'concept',
+                        'PRODUCT': 'tool',
+                        'WORK_OF_ART': 'concept',
+                    }
+                    
+                    entity_type = type_mapping.get(ent.get('type', ''), 'concept')
+                    entity_name = ent.get('text', '').strip()
+                    
+                    if entity_name and len(entity_name) > 2 and entity_name.lower() not in seen:
+                        seen.add(entity_name.lower())
+                        graph_entities.append({
+                            "type": entity_type,
+                            "name": entity_name,
+                            "confidence": ent.get('confidence', 0.5),
+                            "source": "NER"
+                        })
+                
+                return {
+                    "entities": graph_entities,
+                    "relationships": []  # NER doesn't extract relationships
+                }
+            except Exception as ner_error:
+                logger.debug("NER fallback also failed", file_name=file_name, error=str(ner_error))
+                return {"entities": [], "relationships": []}
     
     def _add_to_graph(self, file_name: str, graph_data: Dict[str, Any]):
         """Add entities and relationships to NetworkX graph.

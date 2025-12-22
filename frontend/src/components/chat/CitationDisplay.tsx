@@ -257,15 +257,15 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
 
               {/* Hover Tooltip */}
               {hoveredIndex === index && hasGranularData && expandedIndex !== index && (
-                <div className="absolute z-50 bottom-full left-0 mb-2 w-80 p-3 bg-gray-900 border border-gray-700 rounded-lg shadow-xl">
+                <div className="absolute z-50 bottom-full left-0 mb-2 min-w-fit max-w-md p-3 bg-gray-900 border border-gray-700 rounded-lg shadow-xl">
                   <div className="space-y-2">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1">
-                        <div className="text-xs font-medium text-gray-300">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-gray-300 break-words">
                           {citation.file_name}
                         </div>
                         {location && (
-                          <div className="text-[10px] text-gray-500">
+                          <div className="text-[10px] text-gray-500 mt-0.5">
                             {location}
                           </div>
                         )}
