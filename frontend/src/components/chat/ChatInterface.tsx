@@ -227,11 +227,20 @@ const ChatInterface: React.FC = () => {
         }}
       >
         <div className="max-w-3xl mx-auto space-y-6">
-          {/* Processing Status - Show until folder appears in sidebar */}
-          {(isProcessing || (processingStatus && !folderExistsInSidebar)) && processingStatus && (
+          {/* Processing Status - Show if processing, or if status exists and folder not in sidebar yet, or if status indicates ongoing operations */}
+          {processingStatus && (
+            (isProcessing || 
+             !folderExistsInSidebar || 
+             processingStatus.type === 'learning_started' ||
+             processingStatus.type === 'generating_summary' ||
+             processingStatus.type === 'summary_progress' ||
+             processingStatus.type === 'building_graph' ||
+             processingStatus.type === 'summary_complete' ||
+             processingStatus.type === 'graph_complete') && (
             <div className="animate-fade-in">
               <ProcessingStatus status={processingStatus} error={processingError} />
             </div>
+            )
           )}
           
           {/* Welcome Message (only for initial chat with no messages) */}

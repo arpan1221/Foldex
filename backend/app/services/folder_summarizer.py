@@ -140,7 +140,8 @@ class FolderSummarizer:
                     )
 
             # Step 3: Extract entity summary (60% progress)
-            entity_summary = await self._extract_entity_summary(folder_id)
+            # Pass file_summaries to enable LLM-based theme extraction
+            entity_summary = await self._extract_entity_summary(folder_id, file_summaries=file_summaries)
             if send_progress:
                 try:
                     await manager.send_message(
@@ -461,15 +462,14 @@ class FolderSummarizer:
 
         try:
             # OPTIMIZED: Get all chunks for folder in ONE query instead of N queries
-            # Get up to 30 chunks (2 per file for 15 files)
+            # Get all chunks to enable diverse sampling
             all_chunks = await self.db.get_chunks_by_folder(folder_id, limit=1000, include_subfolders=True)
             
-            # Group chunks by file_id - use up to 3 chunks per file for better context
-            # Prioritize earlier chunks as they often contain headers/titles/introductions
-            chunks_by_file: Dict[str, List[str]] = {}  # Store content strings only
-            chunk_counts_by_file: Dict[str, int] = {}  # Track chunk count per file
+            # Group chunks by file_id - use diverse sampling strategy
+            # Store full chunk objects for better sampling
+            chunks_by_file: Dict[str, List[Dict[str, Any]]] = {}  # Store chunk dicts with content and index
             
-            for chunk in all_chunks:
+            for idx, chunk in enumerate(all_chunks):
                 # Handle DocumentChunk objects
                 if hasattr(chunk, 'file_id'):
                     file_id = chunk.file_id
@@ -486,13 +486,55 @@ class FolderSummarizer:
                 # Initialize if needed
                 if file_id not in chunks_by_file:
                     chunks_by_file[file_id] = []
-                    chunk_counts_by_file[file_id] = 0
                     
-                # Use up to 3 chunks per file (increased from 2 for better context)
-                # This ensures we capture more content from each file
-                if chunk_counts_by_file[file_id] < 3:
-                    chunks_by_file[file_id].append(content)
-                    chunk_counts_by_file[file_id] += 1
+                chunks_by_file[file_id].append({
+                    "content": content,
+                    "index": idx,
+                })
+            
+            # Now apply diverse sampling strategy per file
+            # Sample from beginning, middle, and end if file has many chunks
+            sampled_chunks_by_file: Dict[str, List[str]] = {}
+            for file_id, chunk_list in chunks_by_file.items():
+                total_chunks = len(chunk_list)
+                sampled = []
+                
+                if total_chunks <= 5:
+                    # Small files: take all chunks
+                    sampled = [chunk["content"] for chunk in chunk_list]
+                elif total_chunks <= 10:
+                    # Medium files: take first 2, middle 2, last 1
+                    sampled.append(chunk_list[0]["content"])  # First
+                    sampled.append(chunk_list[1]["content"] if total_chunks > 1 else chunk_list[0]["content"])
+                    mid_point = total_chunks // 2
+                    sampled.append(chunk_list[mid_point]["content"])
+                    sampled.append(chunk_list[mid_point + 1]["content"] if mid_point + 1 < total_chunks else chunk_list[mid_point]["content"])
+                    sampled.append(chunk_list[-1]["content"])  # Last
+                else:
+                    # Large files: take first 2, sample 3 from middle, last 1 (total 6)
+                    sampled.append(chunk_list[0]["content"])  # First chunk (often intro/header)
+                    sampled.append(chunk_list[1]["content"] if total_chunks > 1 else chunk_list[0]["content"])
+                    
+                    # Sample 3 chunks from middle (at 1/4, 1/2, 3/4 positions)
+                    quarter = total_chunks // 4
+                    mid = total_chunks // 2
+                    three_quarter = (3 * total_chunks) // 4
+                    sampled.append(chunk_list[quarter]["content"])
+                    sampled.append(chunk_list[mid]["content"])
+                    sampled.append(chunk_list[three_quarter]["content"])
+                    
+                    sampled.append(chunk_list[-1]["content"])  # Last chunk (often conclusion)
+                
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_sampled = []
+                for content in sampled:
+                    content_hash = hash(content[:100])  # Hash first 100 chars to detect near-duplicates
+                    if content_hash not in seen:
+                        seen.add(content_hash)
+                        unique_sampled.append(content)
+                
+                sampled_chunks_by_file[file_id] = unique_sampled
 
             # Prepare file data for batch summarization
             # Build structured file information for single LLM call
@@ -513,10 +555,11 @@ class FolderSummarizer:
             }
             
             for file_id, file_info in file_ids.items():
-                chunks = chunks_by_file.get(file_id, [])
+                chunks = sampled_chunks_by_file.get(file_id, [])
                 
-                # Combine chunks - use up to 800 chars per file for context
-                combined_content = " ".join(chunks)[:800].strip() if chunks else ""
+                # Combine chunks - use up to 2000 chars per file for better context
+                # This gives LLM more actual content to work with
+                combined_content = " ".join(chunks)[:2000].strip() if chunks else ""
                 
                 file_type_desc = file_type_descriptions.get(
                     file_info['file_type'], 
@@ -536,17 +579,20 @@ class FolderSummarizer:
             try:
                 # Build batch prompt with all files
                 batch_prompt_parts = [
-                    "Summarize each file below in exactly two sentences per file.",
+                    "You are a document summarization assistant. Your task is to provide one-sentence summaries for each file listed below.",
                     "",
-                    "For each file, provide:",
-                    "- First sentence: Describe what this file contains or discusses",
-                    "- Second sentence: State the main purpose, key information, or focus of this file",
-                    "- Be specific and factual about actual content",
-                    "- Avoid vague phrases like 'contains information' or 'is about various topics'",
+                    "INSTRUCTIONS:",
+                    "1. For EACH file listed, provide exactly ONE sentence describing what the file contains or discusses",
+                    "2. Be specific and factual - reference actual content from the file preview",
+                    "3. Avoid vague phrases like 'contains information' or 'is about various topics'",
+                    "4. Do NOT include any meta-commentary, explanations, or additional text",
+                    "5. Do NOT repeat words like 'CRITICAL' or 'IMPORTANT'",
                     "",
-                    "Format your response as:",
-                    "FILE: <file_name>",
-                    "SUMMARY: <two-sentence summary>",
+                    "REQUIRED OUTPUT FORMAT (use this EXACT format for each file):",
+                    "FILE: <exact file name as shown above>",
+                    "SUMMARY: <one sentence only>",
+                    "",
+                    "IMPORTANT: You must provide a summary for ALL files. Do not skip any files.",
                     "",
                     "Files to summarize:",
                     "",
@@ -563,7 +609,12 @@ class FolderSummarizer:
                         batch_prompt_parts.append("Content Preview: [No content extracted]")
                     batch_prompt_parts.append("")
                 
-                batch_prompt_parts.append("Now provide summaries for each file in the format specified above:")
+                batch_prompt_parts.append("")
+                batch_prompt_parts.append("Now provide summaries for ALL files above using the format:")
+                batch_prompt_parts.append("FILE: <file name>")
+                batch_prompt_parts.append("SUMMARY: <one sentence>")
+                batch_prompt_parts.append("")
+                batch_prompt_parts.append("Start your response with the first FILE: line. Do not include any introductory text.")
                 batch_prompt = "\n".join(batch_prompt_parts)
                 
                 # Call LLM once for all files
@@ -579,8 +630,32 @@ class FolderSummarizer:
                 )
                 response_text = response.content.strip() if hasattr(response, "content") else str(response).strip()
                 
-                # Parse batch response to extract individual summaries
-                parsed_summaries = self._parse_batch_summaries(response_text, file_data_list)
+                # Check for LLM refusal or meta-commentary
+                refusal_indicators = [
+                    "i can help you",
+                    "i notice",
+                    "however i notice",
+                    "i'll be happy",
+                    "if you provide",
+                    "for now",
+                    "based on the single",
+                    "i can help",
+                    "i notice that there is only",
+                ]
+                response_lower = response_text.lower()
+                has_refusal = any(indicator in response_lower for indicator in refusal_indicators)
+                
+                if has_refusal:
+                    logger.warning(
+                        "LLM refusal detected in batch summary response, using fallback",
+                        folder_id=folder_id,
+                        response_preview=response_text[:200],
+                    )
+                    # Skip parsing and use fallback summaries
+                    parsed_summaries = {}
+                else:
+                    # Parse batch response to extract individual summaries
+                    parsed_summaries = self._parse_batch_summaries(response_text, file_data_list)
                 
                 # Use parsed summaries, fallback to generated ones for missing files
                 for file_data in file_data_list:
@@ -588,7 +663,17 @@ class FolderSummarizer:
                     parsed_summary = parsed_summaries.get(file_id)
                     
                     if parsed_summary:
-                        summary_text = parsed_summary
+                        # Clean up parsed summary one more time to remove any remaining "CRITICAL"
+                        summary_text = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', parsed_summary, flags=re.IGNORECASE).strip()
+                        summary_text = re.sub(r'\s+', ' ', summary_text).strip()
+                        # If cleaned summary is too short or invalid, use fallback
+                        if not summary_text or len(summary_text) < 10:
+                            if file_data["has_content"]:
+                                preview = file_data["content"][:100].replace('\n', ' ').strip()
+                                summary_text = f"{file_data['file_name']} is a {file_data['file_type_desc'].lower()} containing relevant content. The file includes: {preview}..."
+                            else:
+                                file_type_desc = file_data['file_type'].lower()
+                                summary_text = f"{file_data['file_name']} is a {file_type_desc} file in this folder. The file's content could not be extracted for summarization."
                     elif file_data["has_content"]:
                         # Fallback: create a two-sentence descriptive summary from content
                         preview = file_data["content"][:100].replace('\n', ' ').strip()
@@ -598,8 +683,8 @@ class FolderSummarizer:
                         file_type_desc = file_data['file_type'].lower()
                         summary_text = f"{file_data['file_name']} is a {file_type_desc} file in this folder. The file's content could not be extracted for summarization."
 
-                summaries.append({
-                    "file_id": file_id,
+                    summaries.append({
+                        "file_id": file_id,
                         "file_name": file_data["file_name"],
                         "file_type": file_data["file_type"],
                         "summary": summary_text,
@@ -703,9 +788,11 @@ class FolderSummarizer:
                     if summary_text and current_file_name in name_to_id:
                         file_id = name_to_id[current_file_name]
                         # Clean up summary (remove quotes, prefixes, etc.)
-                        summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = re.sub(r'^(Summary|File|This file|CRITICAL|IMPORTANT):\s*', '', summary_text, flags=re.IGNORECASE).strip()
                         summary_text = summary_text.strip('"\'')
-                        if summary_text:
+                        summary_text = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = re.sub(r'\s+', ' ', summary_text).strip()
+                        if summary_text and len(summary_text) > 10:
                             parsed[file_id] = summary_text
                     current_file_name = None
                     current_summary_lines = []
@@ -718,41 +805,86 @@ class FolderSummarizer:
                     summary_text = ' '.join(current_summary_lines).strip()
                     if summary_text and current_file_name in name_to_id:
                         file_id = name_to_id[current_file_name]
-                        summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = re.sub(r'^(Summary|File|This file|CRITICAL|IMPORTANT):\s*', '', summary_text, flags=re.IGNORECASE).strip()
                         summary_text = summary_text.strip('"\'')
-                        if summary_text:
+                        summary_text = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', summary_text, flags=re.IGNORECASE).strip()
+                        summary_text = re.sub(r'\s+', ' ', summary_text).strip()
+                        if summary_text and len(summary_text) > 10:
                             parsed[file_id] = summary_text
                 
                 # Extract file name (remove "FILE:" prefix and clean)
                 file_name_part = line[5:].strip().strip(':').strip()
-                # Try to match against known file names (fuzzy match)
+                # Remove any trailing "CRITICAL" or other noise words
+                file_name_part = re.sub(r'\s+(CRITICAL|IMPORTANT)$', '', file_name_part, flags=re.IGNORECASE).strip()
+                
+                # Try to match against known file names (improved fuzzy match)
+                matched = False
+                # First try exact match (case-insensitive)
                 for known_name in name_to_id.keys():
-                    if file_name_part.lower() in known_name.lower() or known_name.lower() in file_name_part.lower():
+                    if file_name_part.lower() == known_name.lower():
                         current_file_name = known_name
+                        matched = True
                         break
-                else:
-                    # Exact match or try first word
-                    current_file_name = file_name_part.split()[0] if file_name_part else None
+                
+                # Then try substring match
+                if not matched:
+                    for known_name in name_to_id.keys():
+                        if file_name_part.lower() in known_name.lower() or known_name.lower() in file_name_part.lower():
+                            current_file_name = known_name
+                            matched = True
+                            break
+                
+                # Last resort: try to find file name within the line
+                if not matched:
+                    for known_name in name_to_id.keys():
+                        if known_name in file_name_part or file_name_part in known_name:
+                            current_file_name = known_name
+                            matched = True
+                            break
+                
+                # If still no match, try word-by-word matching
+                if not matched and file_name_part:
+                    words = file_name_part.split()
+                    for word in words:
+                        for known_name in name_to_id.keys():
+                            if word in known_name or known_name.startswith(word):
+                                current_file_name = known_name
+                                matched = True
+                                break
+                        if matched:
+                            break
+                
                 current_summary_lines = []
             
             # Check for "SUMMARY:" marker
             elif line.upper().startswith('SUMMARY:'):
                 summary_part = line[8:].strip()
+                # Remove "CRITICAL" or other noise from summary
+                summary_part = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', summary_part, flags=re.IGNORECASE).strip()
+                summary_part = re.sub(r'\s+', ' ', summary_part).strip()
                 if summary_part:
                     current_summary_lines.append(summary_part)
             
             # Accumulate summary lines (content after FILE: or SUMMARY: markers)
             elif current_file_name:
-                current_summary_lines.append(line)
+                # Skip lines that are just noise words
+                if line.upper() not in ['CRITICAL', 'IMPORTANT', 'TASK:', 'REQUIRED:', 'FORMAT:']:
+                    # Remove "CRITICAL" if it appears in the line
+                    cleaned_line = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', line, flags=re.IGNORECASE).strip()
+                    cleaned_line = re.sub(r'\s+', ' ', cleaned_line).strip()
+                    if cleaned_line:
+                        current_summary_lines.append(cleaned_line)
         
         # Handle last summary if response ends without empty line
         if current_file_name and current_summary_lines:
             summary_text = ' '.join(current_summary_lines).strip()
             if summary_text and current_file_name in name_to_id:
                 file_id = name_to_id[current_file_name]
-                summary_text = re.sub(r'^(Summary|File|This file):\s*', '', summary_text, flags=re.IGNORECASE).strip()
+                summary_text = re.sub(r'^(Summary|File|This file|CRITICAL|IMPORTANT):\s*', '', summary_text, flags=re.IGNORECASE).strip()
                 summary_text = summary_text.strip('"\'')
-                if summary_text:
+                summary_text = re.sub(r'\b(CRITICAL|IMPORTANT)\b', '', summary_text, flags=re.IGNORECASE).strip()
+                summary_text = re.sub(r'\s+', ' ', summary_text).strip()
+                if summary_text and len(summary_text) > 10:
                     parsed[file_id] = summary_text
         
         # If structured parsing didn't work well, try alternative patterns
@@ -802,17 +934,24 @@ class FolderSummarizer:
         
         return parsed
 
-    async def _extract_entity_summary(self, folder_id: str) -> Dict[str, Any]:
-        """Extract top entities and themes from folder chunks.
+    async def _extract_entity_summary(
+        self, 
+        folder_id: str,
+        file_summaries: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Extract top entities and themes from folder content using LLM analysis.
+        
+        Uses LLM to extract meaningful, content-specific themes instead of generic keyword matching.
 
         Args:
             folder_id: Folder ID
+            file_summaries: Optional list of file summaries for better theme extraction
 
         Returns:
             Dictionary with top_entities and top_themes
         """
         try:
-            # Get chunks for the folder
+            # Get chunks for entity extraction (for proper nouns, acronyms, etc.)
             chunks = await self.db.get_chunks_by_folder(folder_id, limit=100, include_subfolders=True)
             
             if not chunks:
@@ -821,9 +960,8 @@ class FolderSummarizer:
                     "top_themes": [],
                 }
             
-            # Extract entities (keywords/important terms) from chunk content
+            # Extract entities (proper nouns, acronyms, years) using pattern matching
             entity_counts = Counter()
-            theme_keywords = Counter()
             
             # Common entity patterns
             entity_patterns = [
@@ -832,34 +970,17 @@ class FolderSummarizer:
                 r'\b[A-Z]{2,}\b',  # Acronyms
             ]
             
-            # Theme keywords
-            theme_keyword_groups = {
-                'research': ['research', 'study', 'analysis', 'investigation', 'findings', 'data', 'results'],
-                'technical': ['system', 'algorithm', 'implementation', 'architecture', 'design', 'code', 'function'],
-                'business': ['business', 'market', 'company', 'customer', 'revenue', 'profit', 'strategy'],
-                'academic': ['paper', 'thesis', 'publication', 'journal', 'article', 'reference', 'citation'],
-                'process': ['process', 'workflow', 'procedure', 'method', 'approach', 'technique'],
-            }
-            
             for chunk in chunks:
-                content = chunk.content.lower()
-                
                 # Extract entities (capitalized phrases that appear multiple times)
                 for pattern in entity_patterns:
                     matches = re.findall(pattern, chunk.content)
                     for match in matches:
-                        if len(match) > 2 and match.isupper() or (match[0].isupper() and len(match.split()) <= 3):
+                        if len(match) > 2 and (match.isupper() or (match[0].isupper() and len(match.split()) <= 3)):
                             entity_counts[match] += 1
-                
-                # Count theme keywords
-                for theme, keywords in theme_keyword_groups.items():
-                    for keyword in keywords:
-                        if keyword in content:
-                            theme_keywords[theme] += 1
             
             # Get top entities (excluding very common words)
             top_entities = []
-            common_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'who', 'way', 'use', 'man', 'say', 'she', 'use'}
+            common_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'who', 'way', 'use', 'man', 'say', 'she', 'use', 'This', 'The', 'That', 'These', 'Those'}
             
             for entity, count in entity_counts.most_common(20):
                 entity_lower = entity.lower()
@@ -869,15 +990,58 @@ class FolderSummarizer:
                         "count": count,
                     })
             
-            # Get top themes
+            # Use LLM to extract meaningful, content-specific themes from file summaries
             top_themes = []
-            for theme, count in theme_keywords.most_common(5):
-                if count > 0:
-                    top_themes.append({
-                        "theme": theme,
-                        "count": count,
-                    })
+            if file_summaries and len(file_summaries) > 0:
+                try:
+                    # Build prompt with file summaries
+                    file_summary_text = "\n".join([
+                        f"- {fs['file_name']}: {fs['summary']}"
+                        for fs in file_summaries
+                    ])
+                    
+                    theme_prompt = f"""Analyze the following file summaries and identify 3-5 SPECIFIC themes or topics that appear across these files. 
+
+IMPORTANT: 
+- Extract SPECIFIC themes based on actual content (e.g., "machine learning algorithms", "environmental policy", "urban planning")
+- DO NOT use generic themes like "research", "technical", "academic", "business", "process"
+- Focus on what the files are actually about, not their format or type
+- If files have very different themes, list them separately
+
+File Summaries:
+{file_summary_text}
+
+Provide themes as a simple comma-separated list of 3-5 specific topics (e.g., "deep reinforcement learning, stock trading strategies, financial algorithms" or "environmental systems, urban planning, data analysis"). 
+Themes only (no explanations):"""
+
+                    response = await asyncio.wait_for(
+                        self.llm.get_llm().ainvoke(theme_prompt),
+                        timeout=30.0
+                    )
+                    theme_response = response.content.strip() if hasattr(response, "content") else str(response).strip()
+                    
+                    # Parse themes from response
+                    if theme_response:
+                        # Split by comma, clean up
+                        themes_raw = [t.strip() for t in theme_response.split(',')]
+                        # Filter out generic themes
+                        generic_themes = {'research', 'technical', 'academic', 'business', 'process', 'analysis', 'study', 'data', 'information', 'content', 'document'}
+                        for theme in themes_raw[:5]:  # Limit to 5 themes
+                            theme_lower = theme.lower()
+                            # Skip if it's a generic theme or too short
+                            if theme_lower not in generic_themes and len(theme) > 3:
+                                top_themes.append({
+                                    "theme": theme.strip(),
+                                    "count": 1,  # All themes are equally important
+                                })
+                except Exception as e:
+                    logger.warning(
+                        "LLM theme extraction failed, falling back to empty themes",
+                        folder_id=folder_id,
+                        error=str(e),
+                    )
             
+            # If no themes extracted, return empty list (better than generic themes)
             return {
                 "top_entities": top_entities[:10],  # Top 10 entities
                 "top_themes": top_themes,
@@ -1105,38 +1269,49 @@ One sentence summary:"""
                 )
             relationship_text = "\n\nCross-file Relationships:\n" + "\n".join(relationship_lines)
         
-        # Build entity/themes summary for context
+        # Build entity/themes summary for context (only if we have meaningful themes)
         themes_text = ""
-        if entity_summary and entity_summary.get('top_themes'):
-            themes = [t.get('theme', '') for t in entity_summary['top_themes'][:5]]
-            themes_text = f"\n\nCommon Themes Across Files: {', '.join(themes)}"
+        if entity_summary and entity_summary.get('top_themes') and len(entity_summary['top_themes']) > 0:
+            themes = [t.get('theme', '') for t in entity_summary['top_themes'] if t.get('theme')]
+            if themes:  # Only include if we have actual themes (not generic ones)
+                themes_text = f"\n\nKey Themes: {', '.join(themes)}"
         
-        master_prompt = f"""Create a comprehensive folder summary that enables users to understand the folder contents and answer comparative queries like "are there similarities across files?"
+        master_prompt = f"""You are analyzing a folder containing {file_inventory['total_files']} files. Your task is to create a concise, informative summary that synthesizes the ACTUAL CONTENT from these files.
 
-Folder Context:
+CRITICAL: You must write a summary based ONLY on the file summaries provided below. Do NOT include meta-commentary like "I can help you" or "I notice that there is only one file summary provided". Write the summary directly.
+
+Folder Overview:
 - Total Files: {file_inventory['total_files']}
 - File Types: {type_summary}
 {themes_text}
 {relationship_text}
 
-Individual Files:
+File Summaries (each summarizes actual content from that file):
 {file_summary_text}
 
-Write a comprehensive summary (2-3 paragraphs) that:
-1. Provides an overview of the folder's overall purpose and scope
-2. Mentions each file and its contribution to the folder
-3. **CRITICAL: Explicitly identify and describe similarities, common themes, and connections across multiple files** - this is essential for answering queries about cross-file similarities
-4. Highlight key relationships between files (use the relationship data provided above)
-5. Summarize the collective knowledge, theme, or domain of the folder
+CRITICAL INSTRUCTIONS - Read carefully:
+1. **Use ONLY the actual content described in the file summaries above** - do NOT make generic statements
+2. **Avoid repetitive phrases** like:
+   - "contains information about"
+   - "is related to various topics"
+   - "contributes to the folder's theme"
+   - "is part of a collection"
+   - "appears to be focused on"
+3. **Be specific and factual** - reference actual content, topics, or entities mentioned in the file summaries
+4. **Synthesize meaningfully** - if files share topics, state WHAT those topics are (don't just say "they share topics")
 
-IMPORTANT: The summary MUST include explicit statements about:
-- What themes, topics, or concepts appear across multiple files
-- How files relate to each other (similarities, differences, complementary content)
-- Any common entities, methods, or concepts that span multiple files
+Write 2-3 concise paragraphs that:
+- Paragraph 1: State what this folder actually contains based on the file summaries. If files have DIFFERENT themes/topics, clearly state that (e.g., "This folder contains papers on diverse topics including X, Y, and Z" rather than forcing a unified theme). If they share a theme, be specific about what that theme is.
+- Paragraph 2: If files share common topics, describe those specific connections. If files have different focuses, briefly mention the range of topics. Be concrete - cite actual subject matter from the summaries.
+- Paragraph 3: Mention any notable individual files if they stand out, or summarize how the files relate (or don't relate) to each other. Don't force connections that don't exist.
 
-This enables accurate answers to queries like "are there similarities across the files in the folder?"
+EXAMPLE OF GOOD SUMMARY:
+"This folder contains research documents about deep reinforcement learning for automated stock trading. The papers focus on modifying DRL algorithms to incorporate short selling and thresholding controls to optimize profit and minimize losses. Several documents discuss the application of turbulence as a safety mechanism during extreme market events. The audio files contain transcribed interviews about related trading strategies."
 
-Summary:"""
+EXAMPLE OF BAD SUMMARY (avoid this):
+"This folder contains a diverse collection of files related to research and technical documentation. The files share common themes and exhibit content similarities. Each file contributes to the folder's overall purpose of research and analysis."
+
+Now write the summary using ONLY the actual content described above:"""
 
         try:
             # Use timeout to prevent hanging
@@ -1146,6 +1321,38 @@ Summary:"""
             )
             summary = response.content if hasattr(response, "content") else str(response)
             summary_text = summary.strip()
+            
+            # Check for LLM refusal or meta-commentary in master summary
+            refusal_indicators = [
+                "i can help you",
+                "i notice",
+                "however i notice",
+                "i'll be happy",
+                "if you provide",
+                "for now",
+                "based on the single",
+                "i can help",
+                "i notice that there is only",
+            ]
+            summary_lower = summary_text.lower()
+            has_refusal = any(indicator in summary_lower for indicator in refusal_indicators)
+            
+            if has_refusal:
+                logger.warning(
+                    "LLM refusal detected in master summary, using fallback",
+                    folder_id=folder_id,
+                    summary_preview=summary_text[:200],
+                )
+                # Generate fallback summary from file summaries
+                summary_parts = []
+                summary_parts.append(f"This folder contains {file_inventory['total_files']} files ({type_summary}).")
+                if file_summaries:
+                    summary_parts.append("Files include:")
+                    for fs in file_summaries[:5]:
+                        summary_parts.append(f"- {fs['file_name']}: {fs['summary']}")
+                    if len(file_summaries) > 5:
+                        summary_parts.append(f"... and {len(file_summaries) - 5} more files.")
+                summary_text = " ".join(summary_parts)
             
             # Ensure summary is not empty
             if not summary_text or len(summary_text) < 20:

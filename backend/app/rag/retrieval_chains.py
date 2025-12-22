@@ -193,8 +193,6 @@ def clean_response(text: str) -> str:
             cleaned_lines.append(line)
             continue
             
-        line_lower = line_stripped.lower()
-        
         # Split line into sentences for better duplicate detection
         sentences = re.split(r'[.!?]+', line_stripped)
         cleaned_sentences = []
@@ -247,6 +245,13 @@ def clean_response(text: str) -> str:
     
     text = '\n'.join(cleaned_lines)
 
+    # Remove garbled/corrupted text patterns first (text with merged words)
+    # Pattern: words merged together like "Basedthe" or "documentthat"
+    # Fix common merges
+    text = re.sub(r'(\w+)([A-Z][a-z]+)', r'\1 \2', text)  # Split merged words
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Split camelCase merges
+    text = re.sub(r'(\w)([.!?])(\w)', r'\1\2 \3', text)  # Add space after punctuation
+    
     # Remove repetitive word sequences (garbled text pattern)
     # Pattern: repeated words like "After analyzing After analyzing"
     text = re.sub(r'\b(\w+)(\s+\1){2,}\b', r'\1', text, flags=re.IGNORECASE)
@@ -283,51 +288,13 @@ def clean_response(text: str) -> str:
     
     text = ' '.join(cleaned_words)
     
-    # Remove asterisks and fix word corruption patterns (letters mixed within words)
-    # Pattern: "thresholdl**ing" or "implementedl i tos" - words corrupted with mixed letters
-    # First remove asterisks which are often corruption markers
+    # Remove asterisks which are often corruption markers
     text = re.sub(r'\*{2,}', '', text)  # Remove multiple asterisks
     text = re.sub(r'\*\s*\*', '', text)  # Remove asterisk pairs with spaces
     
-    # This is a more aggressive cleanup for severely corrupted text
-    words = text.split()
-    cleaned_words_corruption = []
-    for word in words:
-        # Clean up word: remove trailing corruption markers
-        # Remove trailing single letters that look like corruption (e.g., "thresholdl" -> "threshold")
-        word_clean = word
-        if len(word) > 5:
-            # Remove trailing 1-2 lowercase letters that might be corruption
-            # Pattern: "thresholdl" -> "threshold"
-            word_clean = re.sub(r'([a-z]+)([a-z]{1,2})$', r'\1', word) if re.match(r'^[a-z]+[a-z]{1,2}$', word.lower()) else word
-        
-        # Remove word if it has suspicious corruption patterns
-        # Pattern: word with mixed lowercase/uppercase mid-word in unusual ways
-        # Pattern: word ending with letters that look like they belong to next word
-        # Example: "thresholdl" -> should be "threshold" or "thresholding"
-        
-        # Check for corruption: word ending with single lowercase letter followed by punctuation
-        # or word with excessive case changes
-        if len(word_clean) > 3:
-            word = word_clean
-            # Count case changes (should be minimal for normal words)
-            case_changes = sum(1 for i in range(1, len(word)) if word[i].isupper() != word[i-1].isupper())
-            # Normal words have 0-2 case changes (e.g., "iPhone", "JavaScript")
-            if case_changes > 4 and word[0].islower():  # Excessive case changes in lowercase word
-                continue  # Skip corrupted word
-            
-            # Check for pattern like "wordl" or "wordingl" (trailing single letter)
-            # or "wordword" (repeated word fragments)
-            if re.search(r'\w{4,}\w{1,2}$', word) and len(word) > 8:
-                # Check if last 1-2 chars might be corruption
-                base_word = word[:-2] if len(word) > 6 else word[:-1]
-                # If base word is a valid-looking word, truncate corruption
-                if re.match(r'^\w{4,}$', base_word):
-                    word = base_word
-        
-        cleaned_words_corruption.append(word)
-    
-    text = ' '.join(cleaned_words_corruption)
+    # Be VERY conservative with word corruption fixes - only fix obvious issues
+    # Don't remove words that might be valid (e.g., technical terms, proper nouns)
+    # Only fix clear corruption patterns like asterisks or obvious jumbles
     
     # Remove corrupted/jumbled text patterns
     # Pattern: text with excessive punctuation, parentheses, or special characters mixed in
@@ -416,8 +383,9 @@ def clean_response(text: str) -> str:
 
     # Detect repeated opening text blocks (common in corrupted responses)
     # Pattern: "The literature review... The literature review..."
-    # Find the longest repeated prefix
-    if len(text) > 200:
+    # BUT: Be very conservative - only truncate if we're CERTAIN it's a duplicate
+    # Don't truncate if text is short (might be cutting off valid content)
+    if len(text) > 1000:  # Only check for long responses
         # Try to find if text starts with a repeated block
         # Check first 500 chars against rest of text
         first_block = text[:500].lower().strip()
@@ -425,44 +393,57 @@ def clean_response(text: str) -> str:
         
         # Look for first_block appearing early in remaining_text
         # This indicates the response was duplicated
-        if len(first_block) > 100 and len(remaining_text) > 100:
-            # Check if first 200 chars of remaining_text match first 200 chars of first_block
-            first_block_sig = first_block[:200]
-            remaining_sig = remaining_text[:200]
+        if len(first_block) > 200 and len(remaining_text) > 200:  # Need substantial blocks
+            # Check if first 300 chars of remaining_text match first 300 chars of first_block
+            # Use longer signature for more confidence
+            first_block_sig = first_block[:300]
+            remaining_sig = remaining_text[:300]
             
-            # Calculate similarity
+            # Calculate similarity - require HIGH confidence (90%+) before truncating
             matching_chars = sum(1 for a, b in zip(first_block_sig, remaining_sig) if a == b)
             similarity = matching_chars / max(len(first_block_sig), len(remaining_sig), 1)
             
-            if similarity > 0.8:  # 80% similarity indicates duplication
-                # Find where the duplication likely ends (where first_block stops matching)
-                # Look for a natural break point (sentence end) near where duplication would end
-                # Just keep the first occurrence
-                text = text[:500].strip()
-                logger.debug("Detected repeated opening block, truncated to first occurrence")
+            # Only truncate if VERY high similarity (90%+) AND we can find a good break point
+            if similarity > 0.9:  # 90% similarity - very high confidence required
+                # Find a sentence boundary near 500 chars to truncate cleanly
+                truncate_point = 500
+                # Look for sentence end within 100 chars of 500
+                for i in range(500, min(600, len(text))):
+                    if text[i] in '.!?':
+                        truncate_point = i + 1
+                        break
+                
+                # Only truncate if we found a good break point
+                if truncate_point < len(text):
+                    text = text[:truncate_point].strip()
+                    logger.debug("Detected repeated opening block, truncated to first occurrence", 
+                               original_length=len(text), truncated_length=truncate_point)
     
     # Final aggressive cleanup: remove any remaining obvious duplicates at start
     # Sometimes the LLM repeats the entire response
+    # BUT: Be very conservative - only remove if we're CERTAIN
     sentences = re.split(r'[.!?]+', text)
-    if len(sentences) > 4:  # Only check if we have enough sentences
+    if len(sentences) > 8:  # Only check if we have MANY sentences (8+)
         # Check if first half of sentences is very similar to second half
         mid_point = len(sentences) // 2
         first_half = ' '.join(sentences[:mid_point]).lower()
         second_half = ' '.join(sentences[mid_point:]).lower()
         
         # If second half starts very similarly to first half, it might be a duplicate
-        if len(first_half) > 100 and len(second_half) > 100:
-            first_words = first_half.split()[:30]  # First 30 words (more thorough check)
-            second_words = second_half.split()[:30]
+        if len(first_half) > 200 and len(second_half) > 200:  # Need substantial halves
+            first_words = first_half.split()[:50]  # First 50 words (more thorough check)
+            second_words = second_half.split()[:50]
             
-            # Check if first 30 words match
+            # Check if first 50 words match - require HIGH confidence
             matching_words = sum(1 for a, b in zip(first_words, second_words) if a == b)
             word_similarity = matching_words / max(len(first_words), len(second_words), 1)
             
-            if word_similarity > 0.85:  # 85% of words match = duplicate
+            # Only remove if VERY high similarity (90%+) - be conservative
+            if word_similarity > 0.9:  # 90% of words match = very likely duplicate
                 # Second half is a repeat, keep only first half
                 text = '. '.join(sentences[:mid_point]) + '.'
-                logger.debug("Detected repeated response halves, kept only first half")
+                logger.debug("Detected repeated response halves, kept only first half",
+                           original_sentences=len(sentences), kept_sentences=mid_point)
     
     # One more pass: remove duplicate sentences at the very beginning
     # Pattern: "Based on the provided resume, X. Based on the provided resume, X."
@@ -475,11 +456,25 @@ def clean_response(text: str) -> str:
         r'^(The literature review[^.!?]{0,200}?)(\.\s+)\1',
         r'^(Based on[^.!?]{0,200}?)(\.\s+)\1',
         r'^(The main[^.!?]{0,200}?)(\.\s+)\1',
+        r'^(Based on the [^.!?]{0,200}?)(\.\s+)\1',
+        r'^(According to the [^.!?]{0,200}?)(\.\s+)\1',
+        r'^(The document[^.!?]{0,200}?)(\.\s+)\1',
     ]
     for pattern in opening_phrase_patterns:
         text = re.sub(pattern, r'\1\2', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Final pass: Remove any remaining obvious duplicate phrases
+    # Check for patterns like "Based on the README.md file, X. Based on the README.md file, X."
+    duplicate_phrase_pattern = r'^(.{50,300}?)(\.\s+)(\1)(\.)'
+    while re.search(duplicate_phrase_pattern, text, flags=re.IGNORECASE | re.DOTALL):
+        text = re.sub(duplicate_phrase_pattern, r'\1\2', text, flags=re.IGNORECASE | re.DOTALL)
 
-    return text.strip()
+    # Final cleanup: normalize whitespace one more time
+    text = re.sub(r'\s+', ' ', text)  # Normalize all whitespace to single spaces
+    text = re.sub(r'\n\s*\n', '\n\n', text)  # Normalize line breaks
+    text = text.strip()
+
+    return text
 
 
 class RetrievalQAChain:
@@ -648,25 +643,29 @@ class RetrievalQAChain:
                 prompt = self.prompt_manager.get_prompt("default")
             
             # Reinitialize chain with prompt (always reinitialize to ensure format_docs closure captures file_id)
-            self.chain = RunnableParallel({
-                "context": self.retriever | format_docs,
-                "question": RunnablePassthrough(),
-                "source_documents": self.retriever
-            }) | {
-                "answer": (
-                    RunnablePassthrough.assign(
-                        context=lambda x: x["context"],
-                        question=lambda x: x["question"]
-                    ) | prompt | self.llm.get_llm() | StrOutputParser()
-                ),
-                "source_documents": lambda x: x["source_documents"]
-            }
+                self.chain = RunnableParallel({
+                    "context": self.retriever | format_docs,
+                    "question": RunnablePassthrough(),
+                    "source_documents": self.retriever
+                }) | {
+                    "answer": (
+                        RunnablePassthrough.assign(
+                            context=lambda x: x["context"],
+                            question=lambda x: x["question"]
+                        ) | prompt | self.llm.get_llm() | StrOutputParser()
+                    ),
+                    "source_documents": lambda x: x["source_documents"]
+                }
 
             # Set up streaming if callback provided
+            # ChatOllama has native streaming (streaming=True), so StreamingCallbackHandler
+            # will handle token streaming via on_llm_new_token callbacks
             callback_list = callbacks or []
+            stream_handler = None
             if streaming_callback:
                 from app.rag.llm_chains import StreamingCallbackHandler
-                callback_list.append(StreamingCallbackHandler(streaming_callback))
+                stream_handler = StreamingCallbackHandler(streaming_callback)
+                callback_list.append(stream_handler)
                 logger.info("Streaming callback registered", callback_count=len(callback_list))
             else:
                 # This is expected behavior for non-streaming requests - use debug level
@@ -824,41 +823,10 @@ class RetrievalQAChain:
                             llm_started = True
                             logger.debug("LLM generation started via astream_events")
                     
-                    # Handle LLM token streaming (this is the key event!)
-                    elif event_type == "on_chat_model_stream":
-                        chunk_data = event.get("data", {}).get("chunk")
-                        if chunk_data:
-                            # Extract token from chunk
-                            token = ""
-                            if hasattr(chunk_data, "content"):
-                                token = chunk_data.content
-                            elif isinstance(chunk_data, dict) and "content" in chunk_data:
-                                token = chunk_data["content"]
-                            
-                            if token:
-                                final_result["answer"] += token
-                                # Note: StreamingCallbackHandler (if in callbacks) already applies ThinkTagStreamFilter
-                                # We call streaming_callback here as a fallback, but the handler should catch it first
-                                # The final answer will be cleaned by clean_response() at the end
-                                if streaming_callback:
-                                    try:
-                                        streaming_callback(token)
-                                        logger.debug("Streamed token via explicit callback", token_length=len(token))
-                                    except Exception as e:
-                                        logger.warning("Streaming callback error", error=str(e))
-                    
-                    # Also handle on_llm_new_token for compatibility
-                    elif event_type == "on_llm_new_token":
-                        token = event.get("data", {}).get("token", "")
-                        if token:
-                            final_result["answer"] += token
-                            # Note: StreamingCallbackHandler (if in callbacks) already applies ThinkTagStreamFilter
-                            # The final answer will be cleaned by clean_response() at the end
-                            if streaming_callback:
-                                try:
-                                    streaming_callback(token)
-                                except Exception as e:
-                                    logger.warning("Streaming callback error", error=str(e))
+                    # Skip token streaming events - ChatOllama has native streaming (streaming=True)
+                    # StreamingCallbackHandler will handle token streaming via on_llm_new_token callbacks
+                    # We'll get the full answer from the handler at the end to avoid duplicates
+                    # DO NOT manually accumulate tokens here - this causes duplicate handling
                     
                     # Handle chain end (final output)
                     elif event_type == "on_chain_end":
@@ -875,8 +843,17 @@ class RetrievalQAChain:
                                     debug_metrics.set_final_context(context_text, token_count)
                             
                             # Capture final answer if not streamed
-                            if "answer" in output and not final_result["answer"]:
-                                final_result["answer"] = output["answer"]
+                            # Only use this if we don't have a handler answer (handler takes precedence)
+                            if "answer" in output:
+                                output_answer = output["answer"]
+                                # Use output answer if it's longer than what we have (more complete)
+                                if output_answer and len(output_answer) > len(final_result.get("answer", "")):
+                                    final_result["answer"] = output_answer
+                                    logger.debug("Using on_chain_end answer", length=len(output_answer))
+                                elif not final_result.get("answer"):
+                                    # If we have no answer yet, use output answer
+                                    final_result["answer"] = output_answer
+                                    logger.debug("Using on_chain_end answer (no previous answer)", length=len(output_answer))
                             
                             # Capture source documents if not already captured
                             if "source_documents" in output:
@@ -951,19 +928,29 @@ class RetrievalQAChain:
                                 status_callback("Generating response...")
 
                     if "answer" in chunk:
-                        token = chunk["answer"]
-                        final_result["answer"] += token
-                        # Explicitly call streaming callback in fallback path
-                        if streaming_callback:
-                            try:
-                                streaming_callback(token)
-                            except Exception as e:
-                                logger.warning("Streaming callback error in fallback", error=str(e))
+                        # In fallback astream path, chunks may contain answer segments
+                        # StreamingCallbackHandler should still handle token-level streaming via callbacks
+                        # Only accumulate here if handler didn't accumulate it
+                        answer_segment = chunk["answer"]
+                        if answer_segment and not stream_handler:
+                            # No handler, so we need to accumulate manually
+                            final_result["answer"] += answer_segment
+                        # Note: If stream_handler exists, it accumulates tokens via callbacks
+                        # and we'll get the full answer from handler.get_full_response() later
 
             # End LLM timing if debug enabled
             if debug_metrics:
                 debug_metrics.end_llm()
 
+            # Get the final answer - prefer StreamingCallbackHandler's accumulated response
+            # since ChatOllama streams natively and the handler properly accumulates tokens
+            if stream_handler and hasattr(stream_handler, 'get_full_response'):
+                handler_answer = stream_handler.get_full_response()
+                if handler_answer:
+                    # Use handler's answer (properly accumulated without duplicates)
+                    final_result["answer"] = handler_answer
+                    logger.debug("Using StreamingCallbackHandler accumulated response", length=len(handler_answer))
+            
             # Clean the response to remove thinking tags and unwanted content
             cleaned_answer = clean_response(final_result["answer"])
 

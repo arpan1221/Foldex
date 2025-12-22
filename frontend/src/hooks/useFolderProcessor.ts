@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { folderService, APIException } from '../services/api';
 import { websocketService } from '../services/websocket';
 import { ProcessingStatus, FileMetadata, ProcessFolderRequest } from '../services/types';
+import { eventSystem } from '../utils/eventSystem';
 
 /**
  * useFolderProcessor Hook
@@ -34,13 +35,18 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
   const [error, setError] = useState<APIException | null>(null);
   const currentFolderIdRef = useRef<string | null>(null);
   const wsHandlerRef = useRef<((message: any) => void) | null>(null);
+  // Keep a stable reference to the last status to prevent disappearing
+  const lastStatusRef = useRef<ProcessingStatus | null>(null);
 
   /**
    * Reset processing state
    */
   const reset = useCallback(() => {
     setIsProcessing(false);
+    // Don't clear status immediately - let it persist for a bit
+    // Only clear if explicitly resetting (e.g., new folder)
     setStatus(null);
+    lastStatusRef.current = null;
     setFiles([]);
     setError(null);
     
@@ -96,20 +102,47 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
         // Handle completion or error
         if (message.type === 'processing_complete') {
           // Update status immediately with completion
-          setStatus({
+          const completedStatus: ProcessingStatus = {
             ...newStatus,
+            type: 'processing_complete', // Explicitly set type
             progress: 1.0,
             message: message.message || 'Processing completed successfully',
-          });
+            folder_id: message.folder_id || newStatus.folder_id,
+            files_processed: message.files_processed,
+            total_files: message.total_files,
+          };
+          
+          // Update state immediately
+          setStatus(completedStatus);
+          lastStatusRef.current = completedStatus; // Persist status
 
           // IMPORTANT: Set isProcessing to false so navigation can happen immediately
           // File chunking is complete - users can now chat with files
           // Learning phase (summarization) happens in background and doesn't block navigation
           setIsProcessing(false);
 
+          // Emit robust event for navigation and other components
+          // Use setTimeout to ensure state is updated before emitting event
+          setTimeout(() => {
+            if (message.folder_id) {
+              console.log('📤 Emitting processing_complete event:', {
+                folder_id: message.folder_id,
+                files_processed: message.files_processed,
+                total_files: message.total_files,
+              });
+              eventSystem.emit('processing_complete', {
+                folder_id: message.folder_id,
+                files_processed: message.files_processed,
+                total_files: message.total_files,
+              });
+            }
+          }, 100);
+
           console.log('Processing completed - chunking done, ready for chat', {
+            folder_id: message.folder_id,
             files_processed: message.files_processed,
             total_files: message.total_files,
+            status: completedStatus,
           });
         } else if (message.type === 'summary_complete' || message.type === 'summary_error') {
           // Learning/summarization phase is complete
@@ -119,15 +152,18 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
           
           // Update status with final learning status
           setStatus(newStatus);
+          lastStatusRef.current = newStatus; // Persist status
           
           // Dispatch custom event for summary_complete so sidebar and other components can update
           if (message.type === 'summary_complete' && message.folder_id) {
-            window.dispatchEvent(new CustomEvent('summary_complete', {
-              detail: {
-                folder_id: message.folder_id,
-                summary_data: message.summary_data,
-              }
-            }));
+            const detail = {
+              folder_id: message.folder_id,
+              summary_data: message.summary_data,
+            };
+            // Use robust event system
+            eventSystem.emit('summary_complete', detail);
+            // Also dispatch window event for backward compatibility
+            window.dispatchEvent(new CustomEvent('summary_complete', { detail }));
           }
           
           if (message.type === 'summary_error' && message.folder_id) {
@@ -160,12 +196,14 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
           
           // Dispatch custom events for graph_complete so sidebar can update
           if (message.type === 'graph_complete' && message.folder_id) {
-            window.dispatchEvent(new CustomEvent('graph_complete', {
-              detail: {
-                folder_id: message.folder_id,
-                graph_stats: message.graph_stats,
-              }
-            }));
+            const detail = {
+              folder_id: message.folder_id,
+              graph_stats: message.graph_stats,
+            };
+            // Use robust event system
+            eventSystem.emit('graph_complete', detail);
+            // Also dispatch window event for backward compatibility
+            window.dispatchEvent(new CustomEvent('graph_complete', { detail }));
           }
           
           if (message.type === 'graph_error' && message.folder_id) {
@@ -202,6 +240,7 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
           // For all other messages (including learning messages), update status
           // This ensures learning_started, summary_progress, etc. are displayed
           setStatus(newStatus);
+          lastStatusRef.current = newStatus; // Persist status
         }
 
         // Update files list if provided
@@ -248,10 +287,14 @@ export const useFolderProcessor = (): UseFolderProcessorReturn => {
     };
   }, []);
 
+  // Return status, but fall back to lastStatusRef if status is null
+  // This prevents the progress bar from disappearing during state transitions
+  const stableStatus = status || lastStatusRef.current;
+
   return {
     processFolder,
     isProcessing,
-    status,
+    status: stableStatus,
     files,
     error,
     reset,

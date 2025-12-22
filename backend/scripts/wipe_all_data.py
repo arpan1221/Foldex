@@ -30,7 +30,10 @@ from app.models.database import (
     ProcessingCacheRecord,
 )
 from app.rag.vector_store import LangChainVectorStore
+from app.utils.cache import FileCache, Cache
+from app.config.settings import settings
 import structlog
+import shutil
 
 logger = structlog.get_logger(__name__)
 
@@ -191,7 +194,6 @@ async def wipe_all_data():
         vector_store._reset_chromadb_database()
         
         # Also clean up any remaining collection directories
-        import shutil
         persist_dir = vector_store.persist_directory
         if persist_dir and persist_dir.exists():
             print(f"   Cleaning up persist directory: {persist_dir}")
@@ -222,15 +224,110 @@ async def wipe_all_data():
         
         print(f"✅ Successfully reset vector store")
         
+        # Clear file-based caches
+        print(f"\n🗑️  Clearing file-based caches...")
+        try:
+            # Clear FileCache (downloaded files)
+            file_cache = FileCache()
+            # Clear all user caches by iterating through metadata
+            cleared_count = 0
+            user_ids = set()
+            for cache_key, metadata in file_cache.metadata.items():
+                user_id = metadata.get("user_id")
+                if user_id:
+                    user_ids.add(user_id)
+            
+            for user_id in user_ids:
+                cleared_count += file_cache.clear_user_cache(user_id)
+            
+            # Clear metadata file
+            if file_cache.metadata_file.exists():
+                file_cache.metadata_file.unlink()
+                file_cache.metadata = {}
+            
+            # Also remove any remaining files/directories in cache dir
+            cache_dir = Path(settings.CACHE_DIR)
+            if cache_dir.exists():
+                for item in cache_dir.iterdir():
+                    if item.is_file() and item.name != ".metadata.json":
+                        item.unlink()
+                        cleared_count += 1
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        cleared_count += 1
+            
+            print(f"   ✅ Cleared file cache ({cleared_count} items)")
+        except Exception as e:
+            print(f"   ⚠️  Could not clear file cache: {str(e)}")
+        
+        try:
+            # Clear Cache (JSON cache files)
+            cache = Cache()
+            cleared_count = cache.clear()
+            print(f"   ✅ Cleared {cleared_count} cache files")
+        except Exception as e:
+            print(f"   ⚠️  Could not clear cache: {str(e)}")
+        
+        # Clear knowledge graph files directory
+        print(f"\n🗑️  Clearing knowledge graph files...")
+        try:
+            kg_dir = Path(settings.KNOWLEDGE_GRAPH_DIR)
+            if kg_dir.exists():
+                removed_count = 0
+                for item in kg_dir.iterdir():
+                    if item.is_file():
+                        item.unlink()
+                        removed_count += 1
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        removed_count += 1
+                if removed_count > 0:
+                    print(f"   ✅ Removed {removed_count} knowledge graph files/directories")
+                else:
+                    print(f"   ℹ️  No knowledge graph files to remove")
+            else:
+                print(f"   ℹ️  Knowledge graph directory does not exist")
+        except Exception as e:
+            print(f"   ⚠️  Could not clear knowledge graph files: {str(e)}")
+        
+        # Note: Cache directory already cleared above with FileCache
+        
+        # Clear any LangChain SQLite caches
+        print(f"\n🗑️  Clearing LangChain caches...")
+        try:
+            from app.rag.chain_caching import LangChainCacheManager
+            cache_manager = LangChainCacheManager()
+            cache_manager.clear_all_caches()
+            print(f"   ✅ Cleared LangChain in-memory caches")
+        except Exception as e:
+            print(f"   ⚠️  Could not clear LangChain caches (may not be initialized): {str(e)}")
+        
+        # Check for LangChain SQLite cache files
+        try:
+            langchain_cache_paths = [
+                Path("./data/langchain_cache.db"),
+                Path("./data/.langchain_cache.db"),
+                Path(settings.CACHE_DIR) / "langchain_cache.db",
+            ]
+            for cache_path in langchain_cache_paths:
+                if cache_path.exists():
+                    cache_path.unlink()
+                    print(f"   ✅ Removed LangChain SQLite cache: {cache_path}")
+        except Exception as e:
+            print(f"   ⚠️  Could not check for LangChain SQLite caches: {str(e)}")
+        
         print(f"\n{'='*60}")
         print("✅ ALL DATA WIPED SUCCESSFULLY")
         print(f"{'='*60}\n")
-        print("The database and vector store are now empty.")
+        print("The database, vector store, and all caches are now empty.")
         print("\n📋 Next Steps:")
-        print("   1. Users will need to re-authenticate with Google")
+        print("   1. Restart the backend server to clear in-memory caches")
+        print("      (In-memory caches like entity extraction cache will persist until restart)")
+        print("   2. Users will need to re-authenticate with Google")
         print("      (OAuth refresh tokens have been deleted)")
-        print("   2. Re-index folders through the frontend")
-        print("   3. All file types (HTML, DOCX, PNG, etc.) should process correctly\n")
+        print("   3. Re-index folders through the frontend")
+        print("   4. All file types (HTML, DOCX, PNG, etc.) should process correctly")
+        print("   5. Everything will be indexed fresh with no cached data\n")
         
     finally:
         await db_manager.close()

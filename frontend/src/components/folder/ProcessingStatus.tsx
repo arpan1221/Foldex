@@ -37,11 +37,12 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
         };
       case 'processing_complete':
       case 'graph_complete':
+      case 'summary_complete':
         return {
           icon: 'complete',
-          color: 'text-gray-300',
+          color: 'text-green-400',
           bgColor: 'bg-gray-800/50',
-          borderColor: 'border-gray-700',
+          borderColor: 'border-green-500/30',
         };
       case 'processing_error':
       case 'file_error':
@@ -64,7 +65,8 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
   const config = getStatusConfig();
 
   // Don't render if no status
-  if (!status) {
+  // But be more lenient - if status exists, always render (even if some fields are missing)
+  if (!status || !status.type) {
     return null;
   }
 
@@ -101,7 +103,7 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
               />
             </svg>
           </div>
-        ) : status.type === 'processing_complete' ? (
+        ) : (status.type === 'processing_complete' || status.type === 'summary_complete') ? (
           <svg
             className={`h-6 w-6 ${config.color}`}
             fill="none"
@@ -140,9 +142,10 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
             {status.type === 'building_graph' && 'Building Knowledge Graph'}
             {status.type === 'graph_complete' && 'Graph Complete'}
             {status.type === 'processing_complete' && 'Processing Complete'}
+            {status.type === 'summary_complete' && 'Folder Summarized'}
             {status.type === 'processing_error' && 'Processing Error'}
             {status.type === 'file_error' && 'File Processing Error'}
-            {!['processing_started', 'files_detected', 'file_processing', 'file_processed', 'building_graph', 'graph_complete', 'processing_complete', 'processing_error', 'file_error', 'learning_started', 'generating_summary', 'summary_progress', 'summary_complete', 'summary_error'].includes(status.type) && 'Processing'}
+            {!['processing_started', 'files_detected', 'file_processing', 'file_processed', 'building_graph', 'graph_complete', 'processing_complete', 'summary_complete', 'processing_error', 'file_error', 'learning_started', 'generating_summary', 'summary_progress', 'summary_error'].includes(status.type) && 'Processing'}
           </h3>
           {status.message && (
             <p className="text-sm text-gray-400 mt-1">{status.message}</p>
@@ -253,7 +256,7 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
         </div>
       )}
 
-      {/* Success/Completion Message - Only show if NOT in learning phase */}
+      {/* Success/Completion Message for Processing */}
       {(status.type === 'processing_complete' || status.type === 'graph_complete') && 
        !['learning_started', 'generating_summary', 'summary_progress', 'summary_complete', 'summary_error'].includes(status.type) && (
         <div className="mt-4 p-3 bg-gray-900/50 border border-gray-700 rounded-lg">
@@ -296,6 +299,30 @@ const ProcessingStatus: React.FC<ProcessingStatusProps> = ({ status, error, onRe
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Success Message for Summary Completion */}
+      {status.type === 'summary_complete' && (
+        <div className="mt-4 p-3 bg-gray-900/50 border border-green-500/30 rounded-lg">
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-5 h-5 text-green-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <p className="text-sm text-green-400 font-medium">
+              Folder summarized! Check the Folder Knowledge tab below.
+            </p>
+          </div>
         </div>
       )}
     </div>

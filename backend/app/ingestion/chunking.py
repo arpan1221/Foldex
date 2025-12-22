@@ -33,6 +33,7 @@ except ImportError:
 
 from app.core.exceptions import DocumentProcessingError
 from app.ingestion.metadata_extractor import MetadataExtractor
+from app.services.document_summarizer import get_document_summarizer
 
 logger = structlog.get_logger(__name__)
 
@@ -611,6 +612,229 @@ class FoldexChunker:
         }
 
         return language_map.get(file_ext.lower(), "unknown")
+
+    async def chunk_pdf_with_context(
+        self,
+        file_path: str,
+        file_metadata: Dict[str, Any],
+        include_summary_in_content: bool = True,
+    ) -> List[Document]:
+        """Chunk PDF with document-level context.
+        
+        Args:
+            file_path: Path to PDF file
+            file_metadata: File metadata
+            include_summary_in_content: Whether to include summary in chunk content
+            
+        Returns:
+            List of Documents with document context
+        """
+        if not PYMUPDF_AVAILABLE:
+            raise DocumentProcessingError(
+                file_path,
+                "PyMuPDF is required for PDF processing"
+            )
+        
+        try:
+            import fitz
+            
+            # First, extract all text for summary generation
+            doc = fitz.open(file_path)
+            full_text = ""
+            for page_num in range(len(doc)):
+                full_text += doc[page_num].get_text() + "\n"
+            doc.close()
+            
+            # Generate document context
+            document_summarizer = get_document_summarizer()
+            file_name = file_metadata.get("file_name", "Unknown")
+            
+            try:
+                doc_context = await document_summarizer.generate_document_context(
+                    content=full_text,
+                    file_name=file_name,
+                    file_type="PDF",
+                )
+                logger.debug(
+                    "Generated document context for PDF",
+                    file_name=file_name,
+                    summary_length=len(doc_context.get("document_summary", "")),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to generate document context for PDF, continuing without it",
+                    file_name=file_name,
+                    error=str(e),
+                )
+                doc_context = {
+                    "document_summary": f"{file_name} is a PDF document.",
+                    "document_key_terms": [],
+                    "document_theme": None,
+                }
+            
+            # Now chunk normally
+            chunks = self.chunk_pdf(file_path, file_metadata)
+            
+            # Enhance chunks with document context
+            for chunk in chunks:
+                chunk.metadata["document_summary"] = doc_context.get("document_summary", "")
+                chunk.metadata["document_key_terms"] = doc_context.get("document_key_terms", [])
+                chunk.metadata["document_theme"] = doc_context.get("document_theme")
+                
+                if include_summary_in_content and doc_context.get("document_summary"):
+                    summary_prefix = f"[Document: {doc_context['document_summary']}]\n\n"
+                    chunk.page_content = summary_prefix + chunk.page_content
+            
+            logger.info(
+                "PDF chunking with context completed",
+                file_path=file_path,
+                chunk_count=len(chunks),
+                has_document_summary=bool(doc_context.get("document_summary")),
+            )
+            
+            return chunks
+            
+        except Exception as e:
+            logger.error("PDF chunking with context failed, falling back to regular chunking", 
+                        file_path=file_path, error=str(e))
+            # Fallback to regular chunking
+            return self.chunk_pdf(file_path, file_metadata)
+
+    async def chunk_text_with_context(
+        self,
+        file_path: str,
+        file_metadata: Dict[str, Any],
+        include_summary_in_content: bool = True,
+    ) -> List[Document]:
+        """Chunk text file with document-level context.
+        
+        Args:
+            file_path: Path to text file
+            file_metadata: File metadata
+            include_summary_in_content: Whether to include summary in chunk content
+            
+        Returns:
+            List of Documents with document context
+        """
+        try:
+            # Read full content for summary
+            content = self._read_file_with_encoding(file_path)
+            
+            if not content or not content.strip():
+                logger.warning("Text file is empty", file_path=file_path)
+                return []
+            
+            # Generate document context
+            document_summarizer = get_document_summarizer()
+            file_name = file_metadata.get("file_name", "Unknown")
+            is_markdown = Path(file_path).suffix.lower() in [".md", ".markdown"]
+            file_type = "Markdown" if is_markdown else "Text"
+            
+            try:
+                doc_context = await document_summarizer.generate_document_context(
+                    content=content,
+                    file_name=file_name,
+                    file_type=file_type,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to generate document context for text file",
+                    file_name=file_name,
+                    error=str(e),
+                )
+                doc_context = {
+                    "document_summary": f"{file_name} is a {file_type.lower()} file.",
+                    "document_key_terms": [],
+                    "document_theme": None,
+                }
+            
+            # Chunk normally
+            chunks = self.chunk_text(file_path, file_metadata)
+            
+            # Enhance chunks with document context
+            for chunk in chunks:
+                chunk.metadata["document_summary"] = doc_context.get("document_summary", "")
+                chunk.metadata["document_key_terms"] = doc_context.get("document_key_terms", [])
+                chunk.metadata["document_theme"] = doc_context.get("document_theme")
+                
+                if include_summary_in_content and doc_context.get("document_summary"):
+                    summary_prefix = f"[Document: {doc_context['document_summary']}]\n\n"
+                    chunk.page_content = summary_prefix + chunk.page_content
+            
+            return chunks
+            
+        except Exception as e:
+            logger.error("Text chunking with context failed, falling back to regular chunking",
+                        file_path=file_path, error=str(e))
+            return self.chunk_text(file_path, file_metadata)
+
+    async def chunk_code_with_context(
+        self,
+        file_path: str,
+        file_metadata: Dict[str, Any],
+        include_summary_in_content: bool = True,
+    ) -> List[Document]:
+        """Chunk code file with document-level context.
+        
+        Args:
+            file_path: Path to code file
+            file_metadata: File metadata
+            include_summary_in_content: Whether to include summary in chunk content
+            
+        Returns:
+            List of Documents with document context
+        """
+        try:
+            # Read full content for summary
+            content = self._read_file_with_encoding(file_path)
+            
+            if not content or not content.strip():
+                logger.warning("Code file is empty", file_path=file_path)
+                return []
+            
+            # Generate document context
+            document_summarizer = get_document_summarizer()
+            file_name = file_metadata.get("file_name", "Unknown")
+            file_ext = Path(file_path).suffix.lower()
+            language = self._detect_language(file_ext)
+            
+            try:
+                doc_context = await document_summarizer.generate_document_context(
+                    content=content,
+                    file_name=file_name,
+                    file_type=f"Code ({language})",
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to generate document context for code file",
+                    file_name=file_name,
+                    error=str(e),
+                )
+                doc_context = {
+                    "document_summary": f"{file_name} is a {language} code file.",
+                    "document_key_terms": [],
+                    "document_theme": None,
+                }
+            
+            # Chunk normally
+            chunks = self.chunk_code(file_path, file_metadata)
+            
+            # Enhance chunks with document context
+            for chunk in chunks:
+                chunk.metadata["document_summary"] = doc_context.get("document_summary", "")
+                chunk.metadata["document_key_terms"] = doc_context.get("document_key_terms", [])
+                chunk.metadata["document_theme"] = doc_context.get("document_theme")
+                
+                if include_summary_in_content and doc_context.get("document_summary"):
+                    summary_prefix = f"[Document: {doc_context['document_summary']}]\n\n"
+                    chunk.page_content = summary_prefix + chunk.page_content
+            
+            return chunks
+            
+        except Exception as e:
+            logger.error("Code chunking with context failed, falling back to regular chunking",
+                        file_path=file_path, error=str(e))
+            return self.chunk_code(file_path, file_metadata)
 
 
 # Global instance

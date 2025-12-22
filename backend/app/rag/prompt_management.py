@@ -389,14 +389,14 @@ Answer directly and clearly:"""
                 lines.append(f"• {source} ↔ {target}: {rel_type} (confidence: {confidence:.0%})")
         
         # Common themes across files
-        insights = folder_summary.get("insights", {})
-        top_themes = insights.get("top_themes", [])
+        insights = folder_summary.get("insights") or {}
+        top_themes = insights.get("top_themes", []) if isinstance(insights, dict) else []
         if top_themes:
             lines.append(f"\nCommon Themes Across Files: {', '.join(top_themes)}")
         
         # Top entities (brief)
-        entity_summary = folder_summary.get("entity_summary", {})
-        top_entities = entity_summary.get("top_entities", [])
+        entity_summary = folder_summary.get("entity_summary") or {}
+        top_entities = entity_summary.get("top_entities", []) if isinstance(entity_summary, dict) else []
         if top_entities:
             entity_names = [e.get("entity", "") for e in top_entities[:5]]
             if entity_names:

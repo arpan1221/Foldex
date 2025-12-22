@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFolderProcessor } from '../../hooks/useFolderProcessor';
-import { chatService, APIException } from '../../services/api';
+import { chatService, folderService, APIException } from '../../services/api';
 import FolderUploadInterface from './FolderUploadInterface';
 import FileOverview from './FileOverview';
 import { isValidGoogleDriveUrl, extractFolderId } from '../../utils/validators';
+import { eventSystem } from '../../utils/eventSystem';
 
 /**
  * FolderInput Component
@@ -39,55 +40,171 @@ const FolderInput: React.FC = () => {
   // Show message when chunking completes - file-specific chat is now available
   const [showChatAvailable, setShowChatAvailable] = useState(false);
   
-  // Auto-navigate to chat when chunking completes
+  // Robust auto-navigation using event system
   useEffect(() => {
-    // Get folder ID - prefer processedFolderId, fallback to status.folder_id
     const targetFolderId = processedFolderId || status?.folder_id;
 
-    console.log('Navigation effect check:', {
-      statusType: status?.type,
-      processedFolderId,
-      statusFolderId: status?.folder_id,
+    // Debug logging
+    console.log('🔍 Auto-navigation check:', {
       targetFolderId,
       navigationInitiated: navigationInitiatedRef.current,
+      statusType: status?.type,
+      isProcessing,
+      processedFolderId,
+      statusFolderId: status?.folder_id,
     });
 
-    if (
-      status?.type === 'processing_complete' && 
-      targetFolderId && 
-      !navigationInitiatedRef.current
-    ) {
-      console.log('✅ Navigation triggered - processing_complete detected');
+    if (!targetFolderId) {
+      return;
+    }
+
+    // Only prevent navigation if it's already initiated AND we're still on the same folder
+    if (navigationInitiatedRef.current) {
+      console.log('⏸️ Navigation already initiated, skipping');
+      return;
+    }
+
+    const performNavigation = async (folderId: string) => {
+      // Double-check to prevent race conditions
+      if (navigationInitiatedRef.current) {
+        console.log('⚠️ Navigation already initiated (double-check), skipping');
+        return;
+      }
+
+      console.log('✅ Navigation triggered for folder:', folderId);
       navigationInitiatedRef.current = true;
       setShowChatAvailable(true);
-      
-      // Update processedFolderId if it wasn't set
-      if (!processedFolderId && status.folder_id) {
-        setProcessedFolderId(status.folder_id);
-      }
 
       // Clear any existing timer
       if (navigationTimerRef.current) {
         clearTimeout(navigationTimerRef.current);
+        navigationTimerRef.current = null;
       }
 
-      // Navigate to chat after a short delay to show the success message
-      console.log('Setting navigation timer for folder:', targetFolderId);
+      // Navigate after a short delay to show the success message
       navigationTimerRef.current = setTimeout(async () => {
         try {
-          console.log('Creating conversation for folder:', targetFolderId);
-          const newConv = await chatService.createConversation(targetFolderId, 'Initial Chat');
-          console.log('Conversation created, navigating to:', `/chat/${targetFolderId}/${newConv.conversation_id}`);
-          navigate(`/chat/${targetFolderId}/${newConv.conversation_id}`);
+          console.log('📝 Creating initial conversation for folder:', folderId);
+          const newConv = await chatService.createConversation(folderId, 'Initial Chat');
+          console.log('🚀 Navigating to chat:', `/chat/${folderId}/${newConv.conversation_id}`);
+          navigate(`/chat/${folderId}/${newConv.conversation_id}`);
         } catch (err) {
-          console.error('Failed to create initial conversation, navigating anyway:', err);
-          navigate(`/chat/${targetFolderId}`);
+          console.error('Failed to create conversation:', err);
+          // Navigate to folder without conversation ID
+          console.log('🚀 Navigating to chat (fallback):', `/chat/${folderId}`);
+          navigate(`/chat/${folderId}`);
         } finally {
           navigationTimerRef.current = null;
         }
-      }, 2000);  // 2 second delay to show the success message, then auto-navigate
+      }, 1500);
+    };
+
+    // Method 1: Listen to status change (direct from hook) - most immediate
+    if (status?.type === 'processing_complete' && status?.folder_id === targetFolderId) {
+      console.log('📊 Processing complete status detected (Method 1):', targetFolderId);
+      if (!processedFolderId && status.folder_id) {
+        setProcessedFolderId(status.folder_id);
+      }
+      // Small delay to ensure state is updated
+      setTimeout(() => performNavigation(targetFolderId), 100);
+      return; // Exit early if Method 1 triggers
     }
 
+    // Method 2: Listen to event system (more robust, cross-component)
+    const unsubscribe = eventSystem.on('processing_complete', (detail) => {
+      console.log('📡 Processing complete event received (Method 2):', detail.folder_id);
+      // Match any target folder ID or the detail folder ID
+      const matchesFolder = detail.folder_id === targetFolderId || 
+                           detail.folder_id === processedFolderId ||
+                           detail.folder_id === status?.folder_id;
+      
+      if (matchesFolder && !navigationInitiatedRef.current) {
+        console.log('✅ Event matches folder, triggering navigation:', detail.folder_id);
+        if (!processedFolderId && detail.folder_id) {
+          setProcessedFolderId(detail.folder_id);
+        }
+        performNavigation(detail.folder_id);
+      }
+    });
+
+    // Method 3: Polling fallback (safety net in case events are missed)
+    // Improved: Check folder status, not just existence
+    let stopPolling: (() => void) | null = null;
+    if (targetFolderId && !navigationInitiatedRef.current && !isProcessing) {
+      console.log('🔄 Starting polling fallback for folder:', targetFolderId);
+      stopPolling = eventSystem.startPolling(
+        targetFolderId,
+        'processing_complete',
+        async () => {
+          // Better check: verify folder status is completed
+          try {
+            const folders = await folderService.getUserFolders();
+            const folder = folders.find((f) => f.folder_id === targetFolderId);
+            // Folder exists AND has file_count > 0 means processing likely complete
+            // OR check if folder status is "completed"
+            const isComplete = folder && (
+              (folder.file_count !== undefined && folder.file_count > 0) ||
+              folder.status === 'completed' ||
+              folder.status === 'learning_complete'
+            );
+            
+            if (isComplete) {
+              console.log('✅ Polling detected folder is complete:', {
+                folder_id: targetFolderId,
+                file_count: folder?.file_count,
+                status: folder?.status,
+              });
+            }
+            
+            return !!isComplete;
+          } catch (err) {
+            console.debug('Polling check error:', err);
+            return false;
+          }
+        },
+        {
+          interval: 2000,
+          maxAttempts: 30, // 60 seconds total
+          onComplete: (detail) => {
+            console.log('🔄 Polling detected completion (Method 3) for folder:', detail.folder_id);
+            if (!navigationInitiatedRef.current) {
+              const folderId = detail.folder_id || targetFolderId;
+              if (!processedFolderId && folderId) {
+                setProcessedFolderId(folderId);
+              }
+              performNavigation(folderId);
+            }
+          },
+        }
+      );
+    }
+
+    return () => {
+      unsubscribe();
+      if (stopPolling) {
+        stopPolling();
+      }
+      // Don't clear timer on cleanup - let navigation complete
+    };
+  }, [status?.type, status?.folder_id, processedFolderId, isProcessing, navigate]);
+
+  // Reset navigation flag when a new folder is processed or component unmounts
+  useEffect(() => {
+    // Reset when processing starts for a NEW folder
+    if (status?.type === 'processing_started') {
+      const currentFolderId = status?.folder_id;
+      // Only reset if it's a different folder
+      if (currentFolderId && currentFolderId !== processedFolderId) {
+        console.log('🔄 Resetting navigation for new folder:', currentFolderId);
+        navigationInitiatedRef.current = false;
+        setShowChatAvailable(false);
+        if (navigationTimerRef.current) {
+          clearTimeout(navigationTimerRef.current);
+          navigationTimerRef.current = null;
+        }
+      }
+    }
+    
     // Cleanup on unmount
     return () => {
       if (navigationTimerRef.current) {
@@ -95,15 +212,7 @@ const FolderInput: React.FC = () => {
         navigationTimerRef.current = null;
       }
     };
-  }, [status?.type, status?.folder_id, processedFolderId, navigate]);
-
-  // Reset navigation flag when a new folder is processed
-  useEffect(() => {
-    if (processedFolderId && status?.type === 'processing_started') {
-      navigationInitiatedRef.current = false;
-      setShowChatAvailable(false);
-    }
-  }, [processedFolderId, status?.type]);
+  }, [status?.type, status?.folder_id, processedFolderId]);
 
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -349,7 +458,8 @@ const FolderInput: React.FC = () => {
         </div>
 
         {/* Processing Status - Floating Google Drive-like Interface */}
-        {(isProcessing || status) && status && (
+        {/* Only show while processing, hide once navigation is initiated */}
+        {(isProcessing || status) && status && !navigationInitiatedRef.current && (
           <FolderUploadInterface status={status} error={error} />
         )}
 

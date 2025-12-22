@@ -170,6 +170,14 @@ async def build_knowledge_graph(
                     return
                 
                 # Build knowledge graph using LangGraph workflow
+                # IMPORTANT: LangGraph workflow already extracts entities and relationships
+                # We don't need to do entity extraction again with FoldexKnowledgeGraph
+                logger.info(
+                    "Starting knowledge graph build via LangGraph service",
+                    folder_id=folder_id,
+                    chunk_count=len(chunks),
+                )
+                
                 knowledge_service = get_knowledge_service()
                 graph = await knowledge_service.build_knowledge_graph(
                     documents=chunks,
@@ -177,6 +185,13 @@ async def build_knowledge_graph(
                     resume_from_checkpoint=False,
                 )
                 
+                logger.info(
+                    "Knowledge graph build completed",
+                    folder_id=folder_id,
+                    node_count=graph.number_of_nodes(),
+                    edge_count=graph.number_of_edges(),
+                )
+
                 # Convert graph to JSON format for storage
                 import json
                 # Use to_json method if available, otherwise build manually

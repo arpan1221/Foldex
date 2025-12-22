@@ -458,9 +458,10 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
         </div>
       </div>
 
-      {/* Progress Bar */}
-      <div className="px-4 pt-3 pb-2 bg-gray-800">
-        {isSummarizing ? (
+      {/* Progress Bar - Always show if there's any status or files being processed */}
+      {(status || files.size > 0 || folders.size > 0) && (
+        <div className="px-4 pt-3 pb-2 bg-gray-800">
+          {isSummarizing ? (
           <>
             <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
               <div
@@ -494,8 +495,9 @@ const FolderUploadInterface: React.FC<FolderUploadInterfaceProps> = ({ status, e
               )}
             </div>
           </>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* File List */}
       {isExpanded && (

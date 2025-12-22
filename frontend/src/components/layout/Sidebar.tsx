@@ -6,6 +6,7 @@ import { FolderMetadata, TreeNode, Conversation } from '../../services/types';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ErrorDisplay from '../common/ErrorDisplay';
 import TreeNodeComponent from './TreeNode';
+import { eventSystem } from '../../utils/eventSystem';
 
 /**
  * Sidebar Component
@@ -38,7 +39,7 @@ const Sidebar: React.FC = () => {
   const [folderSummaries, setFolderSummaries] = useState<Record<string, any>>({});
   const [summarizingFolders, setSummarizingFolders] = useState<Set<string>>(new Set());
   const [buildingGraphFolders, setBuildingGraphFolders] = useState<Set<string>>(new Set());
-  const pollIntervalsRef = React.useRef<Record<string, NodeJS.Timeout>>({});
+  const pollIntervalsRef = React.useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   // Load folders on mount and when location changes (folder processed)
   useEffect(() => {
@@ -51,81 +52,101 @@ const Sidebar: React.FC = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    // Handler to update folder summary when graph completes
-    const handleGraphCompleteEvent = async (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const folderId = customEvent.detail?.folder_id;
+    // Use robust event system for reliable event handling
+    const unsubscribeGraph = eventSystem.on('graph_complete', async (detail) => {
+      const folderId = detail.folder_id;
       if (!folderId) return;
 
-      // Update folder summary to reflect graph completion
-      try {
-        const summary = await folderService.getFolderSummary(folderId);
-        setFolderSummaries(prev => ({
-          ...prev,
-          [folderId]: summary  // Store full summary object for consistency
-        }));
-        console.log('Graph completed, updated sidebar for folder:', folderId, summary.graph_statistics);
-        // Clear polling interval if it exists
-        if (pollIntervalsRef.current[`graph_${folderId}`]) {
-          clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
-          delete pollIntervalsRef.current[`graph_${folderId}`];
-        }
-        setBuildingGraphFolders(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(folderId);
-          return newSet;
-        });
-      } catch (err) {
-        console.debug('Failed to update folder summary after graph completion:', err);
-        setBuildingGraphFolders(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(folderId);
-          return newSet;
-        });
-      }
-    };
+      console.log('✅ Graph complete event received for folder:', folderId);
 
-    // Listen for custom graph_complete and summary_complete events
-    const handleSummaryCompleteEvent = async (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const folderId = customEvent.detail?.folder_id;
+      // Clear polling interval immediately
+      if (pollIntervalsRef.current[`graph_${folderId}`]) {
+        clearInterval(pollIntervalsRef.current[`graph_${folderId}`]);
+        delete pollIntervalsRef.current[`graph_${folderId}`];
+      }
+
+      // Clear building state immediately
+      setBuildingGraphFolders(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(folderId);
+        return newSet;
+      });
+
+      // Update folder summary to reflect graph completion with a small delay
+      setTimeout(async () => {
+        try {
+          const summary = await folderService.getFolderSummary(folderId);
+          setFolderSummaries(prev => ({
+            ...prev,
+            [folderId]: summary  // Store full summary object for consistency
+          }));
+          console.log('✅ Graph statistics updated in sidebar:', folderId, summary.graph_statistics);
+        } catch (err) {
+          console.debug('Failed to update folder summary after graph completion:', err);
+        }
+      }, 500);
+    });
+
+    const unsubscribeSummary = eventSystem.on('summary_complete', async (detail) => {
+      const folderId = detail.folder_id;
       if (!folderId) return;
 
-      // Update folder summary and clear summarizing state
-      try {
-        const summary = await folderService.getFolderSummary(folderId);
-        setFolderSummaries(prev => ({
-          ...prev,
-          [folderId]: summary  // Store full summary object, not just graph_statistics
-        }));
-        console.log('Summary completed, updated sidebar for folder:', folderId);
-        // Clear polling interval if it exists
-        if (pollIntervalsRef.current[`summary_${folderId}`]) {
-          clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
-          delete pollIntervalsRef.current[`summary_${folderId}`];
-        }
-        // Clear summarizing state
-        setSummarizingFolders(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(folderId);
-          return newSet;
-        });
-      } catch (err) {
-        console.debug('Failed to update folder summary after completion:', err);
-        setSummarizingFolders(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(folderId);
-          return newSet;
-        });
-      }
-    };
+      console.log('✅ Summary complete event received for folder:', folderId);
 
-    window.addEventListener('graph_complete', handleGraphCompleteEvent);
-    window.addEventListener('summary_complete', handleSummaryCompleteEvent);
+      // Clear polling interval immediately
+      if (pollIntervalsRef.current[`summary_${folderId}`]) {
+        clearInterval(pollIntervalsRef.current[`summary_${folderId}`]);
+        delete pollIntervalsRef.current[`summary_${folderId}`];
+      }
+
+      // Clear summarizing state immediately
+      setSummarizingFolders(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(folderId);
+        return newSet;
+      });
+
+      // Update folder summary with a small delay
+      setTimeout(async () => {
+        try {
+          const summary = await folderService.getFolderSummary(folderId);
+          setFolderSummaries(prev => ({
+            ...prev,
+            [folderId]: summary  // Store full summary object, not just graph_statistics
+          }));
+          console.log('✅ Summary data updated in sidebar:', folderId);
+        } catch (err) {
+          console.debug('Failed to update folder summary after completion:', err);
+        }
+      }, 500);
+
+      // Auto-navigate to chat interface after summary completes
+      // Use robust navigation similar to FolderInput.tsx
+      const performNavigation = (targetFolderId: string) => {
+        // Only navigate if we're not already on the chat page for this folder
+        const currentPath = location.pathname;
+        const chatPath = `/chat/${targetFolderId}`;
+        
+        if (currentPath !== chatPath) {
+          console.log('🚀 Auto-navigating to chat after summary completion for folder:', targetFolderId);
+          // Small delay to ensure summary is fully saved and UI is ready
+          setTimeout(() => {
+            navigate(chatPath);
+          }, 800); // Slightly longer delay than summary update to ensure data is ready
+        } else {
+          console.log('📍 Already on chat page for folder, skipping navigation:', targetFolderId);
+        }
+      };
+
+      // Navigate after summary is confirmed to be saved
+      setTimeout(() => {
+        performNavigation(folderId);
+      }, 1000); // Wait for summary to be saved (500ms) + buffer (500ms)
+    });
 
     return () => {
-      window.removeEventListener('graph_complete', handleGraphCompleteEvent);
-      window.removeEventListener('summary_complete', handleSummaryCompleteEvent);
+      unsubscribeGraph();
+      unsubscribeSummary();
       // Cleanup any polling intervals
       Object.values(pollIntervalsRef.current).forEach(interval => clearInterval(interval));
       pollIntervalsRef.current = {};

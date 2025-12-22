@@ -94,26 +94,169 @@ class LangGraphKnowledgeService:
                 config["configurable"] = {"thread_id": folder_id}
 
             # Run relationship detection workflow
-            final_state = await self.workflow.run(
-                documents=documents,
+            logger.info(
+                "Running relationship detection workflow",
+                document_count=len(documents),
                 folder_id=folder_id,
-                config=config if config else None,
             )
+            
+            try:
+                final_state = await self.workflow.run(
+                    documents=documents,
+                    folder_id=folder_id,
+                    config=config if config else None,
+                )
+                
+                logger.info(
+                    "Workflow run completed",
+                    folder_id=folder_id,
+                    state_keys=list(final_state.keys()) if final_state else [],
+                )
+            except Exception as workflow_error:
+                logger.error(
+                    "Workflow run failed, falling back to GraphBuilder",
+                    folder_id=folder_id,
+                    error=str(workflow_error),
+                    error_type=type(workflow_error).__name__,
+                    exc_info=True,
+                )
+                # Fallback: use GraphBuilder which does entity/relationship extraction
+                logger.info("Using GraphBuilder as fallback for graph construction")
+                graph = await self.graph_builder.build_graph(
+                    chunks=documents,
+                    relationships=None,  # Will extract relationships
+                )
+                return graph
 
-            # Extract relationships from state
+            # Extract relationships and entities from state
             relationships = final_state.get("relationships", [])
+            entities = final_state.get("entities", {})  # Dict mapping file_id to entity list
 
             logger.info(
                 "Relationship detection completed",
                 relationship_count=len(relationships),
+                entity_count=sum(len(ent_list) for ent_list in entities.values()),
+                entities_keys=list(entities.keys()) if entities else [],
                 folder_id=folder_id,
             )
+            
+            # If no relationships were found, log warning and try GraphBuilder as fallback
+            if not relationships and not entities:
+                logger.warning(
+                    "No relationships or entities found from workflow, using GraphBuilder fallback",
+                    folder_id=folder_id,
+                )
+                # Fallback: use GraphBuilder
+                graph = await self.graph_builder.build_graph(
+                    chunks=documents,
+                    relationships=None,  # Will extract relationships
+                )
+                logger.info(
+                    "GraphBuilder fallback completed",
+                    node_count=graph.number_of_nodes(),
+                    edge_count=graph.number_of_edges(),
+                    folder_id=folder_id,
+                )
+                if folder_id:
+                    self.graphs[folder_id] = graph
+                return graph
 
-            # Build NetworkX graph
-            graph = await self.graph_builder.build_graph(
-                chunks=documents,
-                relationships=relationships,
-            )
+            # Build NetworkX graph directly from workflow results
+            # IMPORTANT: Don't use graph_builder.build_graph() as it would do
+            # duplicate entity extraction via FoldexKnowledgeGraph
+            import networkx as nx
+            graph = nx.DiGraph()
+
+            # Add document nodes
+            # Build multiple mappings for robust ID lookups
+            doc_ids_to_names = {}
+            chunk_ids_to_names = {}
+            for doc in documents:
+                file_id = doc.file_id if hasattr(doc, 'file_id') else doc.metadata.get('file_id')
+                chunk_id = doc.chunk_id if hasattr(doc, 'chunk_id') else None
+                file_name = doc.metadata.get('file_name', 'unknown') if hasattr(doc, 'metadata') else 'unknown'
+
+                # Map both file_id and chunk_id to file_name for robust lookups
+                if file_id:
+                    doc_ids_to_names[file_id] = file_name
+                if chunk_id:
+                    chunk_ids_to_names[chunk_id] = file_name
+                    doc_ids_to_names[chunk_id] = file_name  # Also map chunk_id
+
+                # Only add document node once (use file_name as unique key)
+                if not graph.has_node(file_name):
+                    graph.add_node(
+                        file_name,
+                        type="document",
+                        label=file_name,
+                        node_type="document",
+                        file_id=file_id,
+                        chunk_id=chunk_id,
+                    )
+
+            # Add entities from workflow (already extracted, no LLM call needed)
+            # entities dict is keyed by document_id (could be chunk_id or file_id)
+            for doc_id, entity_list in entities.items():
+                for entity in entity_list:
+                    entity_name = entity.get("name", "").strip()
+                    entity_type = entity.get("type", "unknown")
+
+                    if not entity_name:
+                        continue
+
+                    # Add or update node
+                    if graph.has_node(entity_name):
+                        # Update existing node
+                        graph.nodes[entity_name]["type"] = entity_type
+                    else:
+                        # Add new node
+                        graph.add_node(
+                            entity_name,
+                            type=entity_type,
+                            label=entity_name,
+                            node_type="entity",
+                        )
+
+                    # Add edge from entity to document (try both mappings)
+                    file_name = doc_ids_to_names.get(doc_id) or chunk_ids_to_names.get(doc_id)
+                    if file_name and graph.has_node(file_name):
+                        graph.add_edge(
+                            entity_name,
+                            file_name,
+                            relation="mentioned_in",
+                        )
+
+            # Add relationships from workflow
+            for rel in relationships:
+                source = rel.get("source", "").strip()
+                target = rel.get("target", "").strip()
+                relation = rel.get("relation", "related")
+
+                if not source or not target:
+                    continue
+
+                # Ensure nodes exist (they might be file IDs, convert to names)
+                source_name = doc_ids_to_names.get(source, source)
+                target_name = doc_ids_to_names.get(target, target)
+
+                if not graph.has_node(source_name):
+                    graph.add_node(
+                        source_name,
+                        type="entity",
+                        label=source_name,
+                        node_type="entity",
+                    )
+
+                if not graph.has_node(target_name):
+                    graph.add_node(
+                        target_name,
+                        type="entity",
+                        label=target_name,
+                        node_type="entity",
+                    )
+
+                # Add edge
+                graph.add_edge(source_name, target_name, relation=relation)
 
             # Cache graph
             if folder_id:

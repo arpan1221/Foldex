@@ -95,8 +95,12 @@ class PDFProcessor(BaseProcessor):
 
             self._update_progress(progress_callback, 0.3)
 
-            # Use intelligent chunking system
-            langchain_docs = self.chunker.chunk_pdf(file_path, file_metadata)
+            # Use intelligent chunking system with document context
+            langchain_docs = await self.chunker.chunk_pdf_with_context(
+                file_path,
+                file_metadata,
+                include_summary_in_content=True,  # Include in content for better embeddings
+            )
 
             self._update_progress(progress_callback, 0.7)
 

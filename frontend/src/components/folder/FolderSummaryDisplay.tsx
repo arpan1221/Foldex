@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FolderSummary } from '../../services/types';
 import { folderService } from '../../services/api';
+import { eventSystem } from '../../utils/eventSystem';
 
 interface FolderSummaryDisplayProps {
   folderId: string;
@@ -17,45 +18,160 @@ const FolderSummaryDisplay: React.FC<FolderSummaryDisplayProps> = ({ folderId })
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const expectingSummaryRef = React.useRef(false); // Track if we're expecting a summary soon
+  const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Define loadSummary outside useEffect so we can call it from event handlers
+  const loadSummary = React.useCallback(async (autoExpand: boolean = false) => {
+    if (!folderId) return;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const summaryData = await folderService.getFolderSummary(folderId);
+      setSummary(summaryData);
+      // Auto-expand if summary just became available
+      if (autoExpand && summaryData.learning_status === 'learning_complete') {
+        console.log('Auto-expanding folder knowledge panel after summary completion');
+        setIsExpanded(true);
+        expectingSummaryRef.current = false; // Summary arrived, stop expecting
+        // Stop polling once we have a complete summary
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+      }
+      // Also check if summary is now complete (even if not auto-expanding)
+      if (summaryData.learning_status === 'learning_complete') {
+        expectingSummaryRef.current = false;
+        // Stop polling once we have a complete summary
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load folder summary');
+      console.error('Error loading folder summary:', err);
+      // Don't clear expectingSummaryRef on error - keep polling
+    } finally {
+      setIsLoading(false);
+    }
+  }, [folderId]);
 
   useEffect(() => {
-    const loadSummary = async () => {
-      if (!folderId) return;
-
-      setIsLoading(true);
-      setError(null);
-      try {
-        const summaryData = await folderService.getFolderSummary(folderId);
-        setSummary(summaryData);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load folder summary');
-        console.error('Error loading folder summary:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     loadSummary();
 
+    // Start polling to check for summary availability
+    // This ensures the component refreshes even if WebSocket events are missed
+    const startPolling = () => {
+      // Clear any existing polling interval
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+      
+      console.log('🔄 Starting polling for folder summary:', folderId);
+      pollingIntervalRef.current = setInterval(async () => {
+        try {
+          const summaryData = await folderService.getFolderSummary(folderId);
+          // If summary just became available, update and stop polling
+          if (summaryData.learning_status === 'learning_complete') {
+            console.log('✅ Polling detected summary is complete:', folderId);
+            setSummary(summaryData);
+            setIsExpanded(true);
+            expectingSummaryRef.current = false;
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+          }
+        } catch (err) {
+          // Ignore polling errors, will retry on next interval
+          console.debug('Polling check error:', err);
+        }
+      }, 2000); // Poll every 2 seconds
+    };
+
     // Listen for summary_complete event to reload when summary becomes available
+    // Use robust event system for reliability
+    const unsubscribe = eventSystem.on('summary_complete', (detail) => {
+      if (detail.folder_id === folderId) {
+        console.log('✅ Summary complete event received, reloading and expanding summary for folder:', folderId);
+        expectingSummaryRef.current = true; // Mark that we're expecting a summary
+        startPolling(); // Start polling as fallback
+        
+        // Also try loading with progressive retries
+        const attemptLoad = (attempt: number = 0) => {
+          setTimeout(async () => {
+            try {
+              await loadSummary(true); // Auto-expand when summary completes
+            } catch (err) {
+              // Retry if we haven't exhausted attempts
+              if (attempt < 4) {
+                attemptLoad(attempt + 1);
+              }
+            }
+          }, 1000 + (attempt * 500)); // Progressive delay: 1s, 1.5s, 2s, 2.5s
+        };
+        attemptLoad(0);
+      }
+    });
+
+    // Also listen to window events for backward compatibility
     const handleSummaryComplete = (event: Event) => {
       const customEvent = event as CustomEvent;
       if (customEvent.detail?.folder_id === folderId) {
-        console.log('Summary complete event received, reloading summary for folder:', folderId);
-        loadSummary();
+        console.log('✅ Summary complete window event received, reloading and expanding summary for folder:', folderId);
+        expectingSummaryRef.current = true;
+        startPolling();
+        
+        // Same retry logic as above
+        const attemptLoad = (attempt: number = 0) => {
+          setTimeout(async () => {
+            try {
+              await loadSummary(true);
+            } catch (err) {
+              if (attempt < 4) {
+                attemptLoad(attempt + 1);
+              }
+            }
+          }, 1000 + (attempt * 500));
+        };
+        attemptLoad(0);
       }
     };
 
     window.addEventListener('summary_complete', handleSummaryComplete);
 
+    // Start polling initially - it will stop itself once a complete summary is found
+    // This ensures we catch the summary even if WebSocket events are missed
+    startPolling();
+
     return () => {
+      unsubscribe();
       window.removeEventListener('summary_complete', handleSummaryComplete);
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
     };
-  }, [folderId]);
+  }, [folderId, loadSummary]);
 
   // Only render if learning is complete (i.e., summarization has been done)
   // This ensures the Folder Knowledge tab only appears after user clicks "Summarize folder contents"
+  // However, if we're expecting a summary (after summary_complete event) or loading, show a loading state
   if (!summary || summary.learning_status !== 'learning_complete') {
+    // Show loading state if we're expecting a summary or actively loading
+    if (isLoading || expectingSummaryRef.current) {
+      return (
+        <div className="bg-gray-800/50 border border-gray-700 rounded-lg mb-6 p-4">
+          <div className="flex items-center gap-2 text-gray-400">
+            <div className="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
+            <span className="text-sm">Loading folder knowledge...</span>
+          </div>
+        </div>
+      );
+    }
     return null;
   }
 

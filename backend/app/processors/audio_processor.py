@@ -103,6 +103,101 @@ class AudioProcessor(BaseProcessor):
         audio_extensions = self.get_supported_extensions()
         return any(file_path.lower().endswith(ext) for ext in audio_extensions)
 
+    def _preprocess_audio_for_whisper(self, audio_path: str) -> str:
+        """Preprocess audio file to Whisper's expected format (mono, 16kHz, PCM 16-bit).
+        
+        This ensures all audio files are in the correct format before transcription,
+        preventing tensor dimension mismatches.
+        
+        Args:
+            audio_path: Path to input audio file
+            
+        Returns:
+            Path to preprocessed audio file (temporary)
+            
+        Raises:
+            DocumentProcessingError: If preprocessing fails
+        """
+        try:
+            # Create temporary audio file
+            temp_dir = Path(tempfile.gettempdir()) / "foldex_audio"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            preprocessed_path = temp_dir / f"{Path(audio_path).stem}_preprocessed.wav"
+            
+            logger.info(
+                "Preprocessing audio for Whisper",
+                input_path=audio_path,
+                output_path=str(preprocessed_path),
+            )
+            
+            # Use ffmpeg to convert to Whisper's expected format
+            # - Mono channel (-ac 1)
+            # - 16kHz sample rate (-ar 16000)
+            # - PCM 16-bit signed little-endian (-acodec pcm_s16le)
+            cmd = [
+                "ffmpeg",
+                "-i", str(audio_path),
+                "-acodec", "pcm_s16le",  # PCM 16-bit
+                "-ar", "16000",  # Sample rate for Whisper (16kHz)
+                "-ac", "1",  # Mono channel
+                "-y",  # Overwrite output
+                str(preprocessed_path),
+            ]
+            
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=300,  # 5 minute timeout
+                )
+                logger.info("Audio preprocessing completed", output_path=str(preprocessed_path))
+                return str(preprocessed_path)
+            except subprocess.TimeoutExpired:
+                raise DocumentProcessingError(
+                    audio_path,
+                    "Audio preprocessing timed out (audio file may be too large)"
+                )
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr.lower()
+                if "ffmpeg" in error_output and "not found" in error_output:
+                    raise DocumentProcessingError(
+                        audio_path,
+                        "ffmpeg not found. Install with: brew install ffmpeg (macOS) or "
+                        "apt-get install ffmpeg (Linux)"
+                    )
+                elif "invalid" in error_output or "corrupted" in error_output:
+                    raise DocumentProcessingError(
+                        audio_path,
+                        f"Audio file appears to be corrupted or invalid: {e.stderr}"
+                    )
+                else:
+                    raise DocumentProcessingError(
+                        audio_path,
+                        f"Audio preprocessing failed: {e.stderr}"
+                    )
+            except FileNotFoundError:
+                raise DocumentProcessingError(
+                    audio_path,
+                    "ffmpeg not found. Install with: brew install ffmpeg (macOS) or "
+                    "apt-get install ffmpeg (Linux)"
+                )
+        except DocumentProcessingError:
+            raise
+        except Exception as e:
+            logger.error(
+                "Audio preprocessing failed",
+                audio_path=audio_path,
+                error=str(e),
+                exc_info=True,
+            )
+            raise DocumentProcessingError(
+                audio_path,
+                f"Audio preprocessing failed: {str(e)}"
+            ) from e
+
     def _extract_audio_from_video(self, video_path: str) -> str:
         """Extract audio track from video file using ffmpeg.
         
@@ -110,7 +205,7 @@ class AudioProcessor(BaseProcessor):
             video_path: Path to video file
             
         Returns:
-            Path to extracted audio file (temporary)
+            Path to extracted audio file (temporary, already in Whisper format)
             
         Raises:
             DocumentProcessingError: If extraction fails
@@ -128,7 +223,7 @@ class AudioProcessor(BaseProcessor):
                 audio_path=str(audio_path),
             )
             
-            # Use ffmpeg to extract audio
+            # Use ffmpeg to extract audio (already in Whisper format)
             cmd = [
                 "ffmpeg",
                 "-i", str(video_path),
@@ -246,6 +341,14 @@ class AudioProcessor(BaseProcessor):
             if file_ext == ".mp4":
                 logger.info("Detected video file, extracting audio track", file_path=file_path)
                 temp_audio_path = self._extract_audio_from_video(file_path)
+                actual_audio_path = temp_audio_path
+                if progress_callback:
+                    progress_callback(0.1)
+            else:
+                # Preprocess all audio files to ensure correct format (mono, 16kHz)
+                # This prevents tensor dimension mismatches in Whisper
+                logger.info("Preprocessing audio file for Whisper compatibility", file_path=file_path)
+                temp_audio_path = self._preprocess_audio_for_whisper(file_path)
                 actual_audio_path = temp_audio_path
                 if progress_callback:
                     progress_callback(0.1)

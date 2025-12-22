@@ -26,6 +26,7 @@ except ImportError:
 
 from app.core.exceptions import DocumentProcessingError
 from app.ingestion.metadata_schema import MetadataBuilder, FileType, ChunkType
+from app.services.document_summarizer import get_document_summarizer
 
 logger = structlog.get_logger(__name__)
 
@@ -569,4 +570,81 @@ class SmartChunker:
         documents = self._add_context_window(documents)
 
         return documents
+
+    async def chunk_with_document_context(
+        self,
+        text: str,
+        file_metadata: Dict[str, Any],
+        sections: Optional[List[Dict[str, Any]]] = None,
+        include_summary_in_content: bool = True,
+    ) -> List[Document]:
+        """Chunk with document-level context for better retrieval.
+        
+        Args:
+            text: Full document text
+            file_metadata: File-level metadata
+            sections: Optional list of sections
+            include_summary_in_content: Whether to prepend summary to chunk content
+            
+        Returns:
+            List of Documents with document context
+        """
+        if not text or not text.strip():
+            logger.warning("Empty text provided for chunking")
+            return []
+        
+        # Generate document-level context
+        document_summarizer = get_document_summarizer()
+        file_name = file_metadata.get("file_name", "Unknown")
+        file_type = self._determine_file_type(file_metadata)
+        
+        try:
+            doc_context = await document_summarizer.generate_document_context(
+                content=text,
+                file_name=file_name,
+                file_type=file_type.value if hasattr(file_type, 'value') else str(file_type),
+            )
+            logger.debug(
+                "Generated document context",
+                file_name=file_name,
+                summary_length=len(doc_context.get("document_summary", "")),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to generate document context, continuing without it",
+                file_name=file_name,
+                error=str(e),
+            )
+            doc_context = {
+                "document_summary": f"{file_name} contains relevant content.",
+                "document_key_terms": [],
+                "document_theme": None,
+            }
+        
+        # Chunk the document (use existing chunking logic)
+        if sections:
+            chunks = self._chunk_by_sections(text, file_metadata, sections)
+        else:
+            chunks = self._chunk_with_context(text, file_metadata)
+        
+        # Enhance each chunk with document context
+        for chunk in chunks:
+            # Add document context to metadata
+            chunk.metadata["document_summary"] = doc_context.get("document_summary", "")
+            chunk.metadata["document_key_terms"] = doc_context.get("document_key_terms", [])
+            chunk.metadata["document_theme"] = doc_context.get("document_theme")
+            
+            # Optionally include summary in chunk content for better embedding
+            if include_summary_in_content and doc_context.get("document_summary"):
+                summary_prefix = f"[Document: {doc_context['document_summary']}]\n\n"
+                chunk.page_content = summary_prefix + chunk.page_content
+        
+        logger.info(
+            "Document-context chunking completed",
+            file_name=file_name,
+            chunk_count=len(chunks),
+            has_document_summary=bool(doc_context.get("document_summary")),
+        )
+        
+        return chunks
 

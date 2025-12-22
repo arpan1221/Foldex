@@ -88,8 +88,12 @@ class CodeProcessor(BaseProcessor):
                     if k not in ["file_name", "mime_type"]
                 })
 
-            # Use intelligent chunking system
-            langchain_docs = self.chunker.chunk_code(file_path, file_metadata)
+            # Use intelligent chunking system with document context
+            langchain_docs = await self.chunker.chunk_code_with_context(
+                file_path,
+                file_metadata,
+                include_summary_in_content=True,
+            )
 
             if not langchain_docs:
                 logger.warning("Code file is empty", file_path=file_path)

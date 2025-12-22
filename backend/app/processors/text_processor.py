@@ -153,13 +153,13 @@ class TextProcessor(BaseProcessor):
             is_markdown = file_path.lower().endswith((".md", ".markdown"))
             file_metadata["is_markdown"] = is_markdown
 
-            # Use SmartChunker for better structure preservation
-            # For Markdown, use header-preserving chunking
-            if is_markdown:
-                langchain_docs = self.smart_chunker.chunk_markdown(content, file_metadata)
-            else:
-                # For plain text, use structure-aware chunking
-                langchain_docs = self.smart_chunker.chunk_with_structure(content, file_metadata)
+            # Use context-aware chunking with document summaries
+            # For text files, use FoldexChunker with context for better document understanding
+            langchain_docs = await self.foldex_chunker.chunk_text_with_context(
+                file_path,
+                file_metadata,
+                include_summary_in_content=True,
+            )
 
             if not langchain_docs:
                 self.logger.warning("No chunks created from text", file_path=file_path)
