@@ -510,6 +510,11 @@ Now provide your comprehensive synthesis with inline citations for every claim:"
                                 if hasattr(first_chunk, "page_content")
                                 else str(first_chunk)[:200]
                             ),
+                            "chunk_content": (
+                                first_chunk.page_content
+                                if hasattr(first_chunk, "page_content")
+                                else str(first_chunk)
+                            ),  # Full content for hover tooltip
                             "total_chunks_from_file": len(chunks),
                         }
 

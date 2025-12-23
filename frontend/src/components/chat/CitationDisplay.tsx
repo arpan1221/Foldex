@@ -132,6 +132,12 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
             {typeCitations.map((citation, index) => {
           const location = formatLocation(citation);
           const hasGranularData = citation.exact_quote || citation.context;
+          
+          // Get content to display in tooltip - prefer chunk_content, then exact_quote, then content_preview
+          const tooltipContent = citation.chunk_content || 
+                                citation.exact_quote || 
+                                citation.content_preview || 
+                                'No content available';
 
           return (
             <div key={index} className="relative">
@@ -242,8 +248,8 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                   </span>
                 )}
 
-                {/* Expand icon */}
-                {hasGranularData && (
+                {/* Expand icon - Show for all citations that have any content */}
+                {(hasGranularData || citation.chunk_content || citation.content_preview) && (
                   <svg
                     className={`w-3 h-3 transition-transform ${expandedIndex === index ? 'rotate-180' : ''}`}
                     fill="none"
@@ -255,33 +261,47 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                 )}
               </button>
 
-              {/* Hover Tooltip */}
-              {hoveredIndex === index && hasGranularData && expandedIndex !== index && (
-                <div className="absolute z-50 bottom-full left-0 mb-2 min-w-fit max-w-md p-3 bg-gray-900 border border-gray-700 rounded-lg shadow-xl">
-                  <div className="space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium text-gray-300 break-words">
-                          {citation.file_name}
+              {/* Hover Tooltip - Show chunk content on hover */}
+              {hoveredIndex === index && expandedIndex !== index && tooltipContent && (
+                <div 
+                  className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-96 max-w-[90vw] p-4 bg-gray-900 border border-gray-700 rounded-lg shadow-xl pointer-events-none"
+                  style={{ 
+                    maxHeight: '400px',
+                    overflowY: 'auto'
+                  }}
+                >
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-2 mb-3 pb-3 border-b border-gray-800">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-200 truncate">
+                        {citation.file_name}
+                      </div>
+                      {location && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          {location}
                         </div>
-                        {location && (
-                          <div className="text-[10px] text-gray-500 mt-0.5">
-                            {location}
-                          </div>
-                        )}
-                      </div>
+                      )}
                     </div>
-
-                    {citation.exact_quote && (
-                      <div className="text-xs text-gray-400 italic border-l-2 border-foldex-primary-700 pl-2">
-                        "{citation.exact_quote.substring(0, 150)}
-                        {citation.exact_quote.length > 150 ? '...' : ''}"
-                      </div>
+                    {citation.citation_number && (
+                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-foldex-primary-900/50 text-foldex-primary-300 text-xs font-bold flex-shrink-0">
+                        {citation.citation_number}
+                      </span>
                     )}
+                  </div>
 
-                    <div className="text-[10px] text-gray-500 pt-1 border-t border-gray-800">
-                      Click for full context
+                  {/* Content */}
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                      Source Content:
                     </div>
+                    <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
+                      {tooltipContent}
+                    </div>
+                  </div>
+
+                  {/* Footer hint */}
+                  <div className="mt-3 pt-3 border-t border-gray-800 text-[10px] text-gray-500 text-center">
+                    {hasGranularData ? 'Click citation for more details' : 'Hover to view source content'}
                   </div>
                 </div>
               )}
@@ -292,7 +312,7 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
         </div>
       ))}
 
-      {/* Expanded Detail Panel */}
+      {/* Expanded Detail Panel - Revived to show chunk_content for all citations */}
       {expandedIndex !== null && citations[expandedIndex] && (
         <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4 space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
           {(() => {
@@ -341,8 +361,15 @@ const CitationDisplay: React.FC<CitationDisplayProps> = ({ citations }) => {
                   </div>
                 </div>
 
-                {/* Context Display */}
-                {citation.context ? (
+                {/* Context Display - Show chunk_content first, then context, then exact_quote, then preview */}
+                {citation.chunk_content ? (
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-gray-400 uppercase tracking-wide">Source Content:</div>
+                    <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words bg-gray-800/30 px-3 py-2 rounded border-l-2 border-foldex-primary-700">
+                      {citation.chunk_content}
+                    </div>
+                  </div>
+                ) : citation.context ? (
                   <div className="space-y-2">
                     <div className="text-xs font-medium text-gray-400">Context:</div>
                     <div className="text-sm leading-relaxed">

@@ -224,21 +224,54 @@ async def query_chat_stream(
             nonlocal accumulated_response, citations, conversation_id
             
             try:
-                # Queue for streaming chunks
-                chunk_queue = asyncio.Queue()
+                # Queue for streaming chunks - use much larger queue to prevent drops
+                # Default queue size is 0 (unbounded), but we set a large limit to prevent memory issues
+                chunk_queue = asyncio.Queue(maxsize=10000)  # Large queue to prevent token drops
                 processing_error = None
                 final_result = None
                 
                 # Callback to stream tokens
+                # NOTE: This callback is called SYNCHRONOUSLY from LangChain's callback handler
+                # We must use put_nowait() but with a large queue to prevent drops
                 def stream_callback(chunk: str):
                     nonlocal accumulated_response
                     accumulated_response += chunk
-                    # Put chunk in queue (non-blocking)
+                    # Put chunk in queue (non-blocking, but queue is large enough to prevent drops)
                     try:
                         chunk_queue.put_nowait(("token", chunk))
-                        logger.debug("Token queued for streaming", chunk_length=len(chunk))
+                        logger.debug(
+                            "Token queued for streaming",
+                            chunk_length=len(chunk),
+                            chunk_preview=chunk[:50] if chunk else "",
+                            total_accumulated=len(accumulated_response),
+                            queue_size=chunk_queue.qsize()
+                        )
+                    except asyncio.QueueFull:
+                        # Queue is full - this is a critical error, log it
+                        logger.error(
+                            "CRITICAL: Queue full, token dropped!",
+                            chunk_length=len(chunk),
+                            queue_size=chunk_queue.qsize(),
+                            total_accumulated=len(accumulated_response),
+                            chunk_preview=chunk[:100] if chunk else ""
+                        )
+                        # Try to put it anyway by waiting (but this is sync, so we can't await)
+                        # This is a fallback - ideally queue should never be full
+                        try:
+                            # Create a task to put it asynchronously
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.create_task(chunk_queue.put(("token", chunk)))
+                        except Exception:
+                            pass
                     except Exception as e:
-                        logger.warning("Failed to queue token", error=str(e))
+                        logger.error(
+                            "Failed to queue token",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            chunk_length=len(chunk),
+                            queue_size=chunk_queue.qsize() if hasattr(chunk_queue, 'qsize') else "unknown"
+                        )
 
                 # Callback to send status updates
                 def status_callback(message: str):
@@ -285,24 +318,105 @@ async def query_chat_stream(
                 
                 # Stream chunks as they arrive
                 citations_sent = False
+                token_count = 0
+                status_count = 0
+                logger.info("Starting streaming loop", timeout_seconds=300.0)
+                
                 while True:
                     try:
                         # Wait for chunk with timeout
                         chunk_type, chunk_data = await asyncio.wait_for(chunk_queue.get(), timeout=300.0)
+                        
+                        logger.debug(
+                            "Received chunk from queue",
+                            chunk_type=chunk_type,
+                            data_length=len(str(chunk_data)) if chunk_data else 0,
+                            token_count=token_count,
+                            status_count=status_count,
+                        )
 
                         if chunk_type == "status":
                             # Status update
+                            status_count += 1
                             yield f"data: {json.dumps({'type': 'status', 'message': chunk_data})}\n\n"
                         elif chunk_type == "citations_early":
                             # Progressive citations (sent after retrieval, before generation)
                             citations_sent = True
+                            logger.info("Sending early citations", citation_count=len(chunk_data) if chunk_data else 0)
                             yield f"data: {json.dumps({'type': 'citations', 'citations': chunk_data})}\n\n"
                         elif chunk_type == "token":
                             # Stream token chunk
+                            token_count += 1
+                            logger.debug(
+                                "Streaming token to client",
+                                token_count=token_count,
+                                token_length=len(chunk_data),
+                                token_preview=chunk_data[:50] if chunk_data else "",
+                            )
                             yield f"data: {json.dumps({'type': 'token', 'content': chunk_data})}\n\n"
                         elif chunk_type == "done":
                             # Processing complete
                             await query_task  # Wait for task to complete
+                            
+                            # CRITICAL: Process ALL remaining tokens in queue before checking final result
+                            # This ensures we don't miss tokens that were queued but not yet processed
+                            logger.info(
+                                "Processing remaining tokens in queue before completion check",
+                                queue_size=chunk_queue.qsize()
+                            )
+                            remaining_tokens_processed = 0
+                            max_remaining_iterations = 10000  # Safety limit
+                            iteration = 0
+                            
+                            # Process all remaining items in queue
+                            while iteration < max_remaining_iterations:
+                                iteration += 1
+                                try:
+                                    # Try to get remaining tokens - use get_nowait to drain queue quickly
+                                    remaining_chunk_type, remaining_chunk_data = chunk_queue.get_nowait()
+                                    
+                                    if remaining_chunk_type == "token":
+                                        remaining_tokens_processed += 1
+                                        accumulated_response += remaining_chunk_data
+                                        logger.debug(
+                                            "Processing remaining token from queue",
+                                            token_count=remaining_tokens_processed,
+                                            token_preview=remaining_chunk_data[:50] if remaining_chunk_data else "",
+                                            queue_remaining=chunk_queue.qsize()
+                                        )
+                                        yield f"data: {json.dumps({'type': 'token', 'content': remaining_chunk_data})}\n\n"
+                                    elif remaining_chunk_type == "status":
+                                        yield f"data: {json.dumps({'type': 'status', 'message': remaining_chunk_data})}\n\n"
+                                    elif remaining_chunk_type == "citations_early":
+                                        citations_sent = True
+                                        yield f"data: {json.dumps({'type': 'citations', 'citations': remaining_chunk_data})}\n\n"
+                                    # Don't process another "done" - we're already handling it
+                                    elif remaining_chunk_type == "done":
+                                        logger.warning("Found duplicate 'done' signal in queue, ignoring")
+                                    
+                                except asyncio.QueueEmpty:
+                                    # Queue is empty, we're done processing remaining tokens
+                                    break
+                                except Exception as e:
+                                    logger.warning(
+                                        "Error processing remaining queue item",
+                                        error=str(e),
+                                        iteration=iteration
+                                    )
+                                    break
+                            
+                            if remaining_tokens_processed > 0:
+                                logger.info(
+                                    "Processed remaining tokens from queue",
+                                    count=remaining_tokens_processed,
+                                    new_accumulated_length=len(accumulated_response),
+                                    final_queue_size=chunk_queue.qsize()
+                                )
+                            elif chunk_queue.qsize() > 0:
+                                logger.warning(
+                                    "Queue still has items after processing",
+                                    remaining_count=chunk_queue.qsize()
+                                )
 
                             if final_result is None:
                                 yield f"data: {json.dumps({'type': 'error', 'content': 'Query processing returned None result'})}\n\n"
@@ -313,23 +427,75 @@ async def query_chat_stream(
                             conversation_id = final_result.get("conversation_id")
                             answer = final_result.get("response", "") or final_result.get("answer", "")
 
-                            # If no tokens were streamed but we have an answer, stream it word by word
-                            # This ensures the user always sees streaming, even if callbacks weren't triggered
-                            if not accumulated_response and answer:
-                                logger.warning(
-                                    "No streaming occurred via callbacks, streaming full response word-by-word",
-                                    answer_length=len(answer),
-                                    accumulated_length=len(accumulated_response)
-                                )
-                                # Stream the answer word by word to maintain streaming UX
-                                words = answer.split()
-                                for i, word in enumerate(words):
-                                    if i > 0:
-                                        yield f"data: {json.dumps({'type': 'token', 'content': ' '})}\n\n"
-                                    yield f"data: {json.dumps({'type': 'token', 'content': word})}\n\n"
-                                    # Small delay every few words
-                                    if i % 5 == 0:
-                                        await asyncio.sleep(0.01)
+                            # Normalize whitespace for comparison (strip trailing whitespace)
+                            normalized_answer = answer.rstrip()
+                            normalized_accumulated = accumulated_response.rstrip()
+                            
+                            logger.info(
+                                "Streaming completion check",
+                                answer_length=len(normalized_answer),
+                                accumulated_length=len(normalized_accumulated),
+                                answer_preview=normalized_answer[:100] if normalized_answer else "",
+                                accumulated_preview=normalized_accumulated[:100] if normalized_accumulated else "",
+                            )
+
+                            # Check if we need to stream remaining content
+                            # This handles cases where:
+                            # 1. No tokens were streamed at all (accumulated_response is empty)
+                            # 2. Some tokens were streamed but not all (accumulated_response is shorter than answer)
+                            # 3. Accumulated response doesn't end with the answer (missing trailing content)
+                            if normalized_answer:
+                                if not normalized_accumulated:
+                                    # No streaming occurred - stream full response word by word
+                                    logger.warning(
+                                        "No streaming occurred via callbacks, streaming full response word-by-word",
+                                        answer_length=len(normalized_answer),
+                                        accumulated_length=len(normalized_accumulated)
+                                    )
+                                    words = normalized_answer.split()
+                                    for i, word in enumerate(words):
+                                        if i > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': ' '})}\n\n"
+                                        yield f"data: {json.dumps({'type': 'token', 'content': word})}\n\n"
+                                        # Small delay every few words
+                                        if i % 5 == 0:
+                                            await asyncio.sleep(0.01)
+                                elif not normalized_answer.startswith(normalized_accumulated) or len(normalized_accumulated) < len(normalized_answer):
+                                    # Partial streaming occurred - stream remaining content
+                                    # Use more robust comparison: check if answer starts with accumulated, or if accumulated is shorter
+                                    common_prefix_len = len(normalized_accumulated)
+                                    if normalized_answer.startswith(normalized_accumulated):
+                                        # Accumulated is a prefix of answer - stream the suffix
+                                        remaining = normalized_answer[len(normalized_accumulated):]
+                                    else:
+                                        # Accumulated doesn't match answer prefix - stream from where they diverge
+                                        # Find the longest common prefix
+                                        common_prefix_len = 0
+                                        min_len = min(len(normalized_accumulated), len(normalized_answer))
+                                        for i in range(min_len):
+                                            if normalized_accumulated[i] == normalized_answer[i]:
+                                                common_prefix_len = i + 1
+                                            else:
+                                                break
+                                        remaining = normalized_answer[common_prefix_len:]
+                                    
+                                    if remaining.strip():  # Only stream if there's actual content remaining
+                                        logger.warning(
+                                            "Partial streaming detected, streaming remaining content",
+                                            answer_length=len(normalized_answer),
+                                            accumulated_length=len(normalized_accumulated),
+                                            remaining_length=len(remaining),
+                                            common_prefix_len=common_prefix_len
+                                        )
+                                        # Stream remaining content word by word
+                                        words = remaining.split()
+                                        for i, word in enumerate(words):
+                                            if i > 0:
+                                                yield f"data: {json.dumps({'type': 'token', 'content': ' '})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'token', 'content': word})}\n\n"
+                                            # Small delay every few words
+                                            if i % 5 == 0:
+                                                await asyncio.sleep(0.01)
 
                             # Always send citations at the end to ensure they're received
                             # This is a safety mechanism - if early citations were sent, this will update them
@@ -340,9 +506,26 @@ async def query_chat_stream(
                             elif citations_sent:
                                 logger.debug("Citations already sent early, but no final citations available")
 
-                            # Send completion
+                            # Flush any remaining data and send completion
+                            # Add a small delay to ensure all previous yields are processed
+                            await asyncio.sleep(0.1)
+                            
+                            logger.info(
+                                "Sending completion signal",
+                                conversation_id=conversation_id,
+                                final_answer_length=len(normalized_answer),
+                                final_accumulated_length=len(normalized_accumulated),
+                                citations_count=len(citations) if citations else 0,
+                            )
+                            
+                            # Send completion signal
                             done_data = {'type': 'done', 'conversation_id': conversation_id}
                             yield f"data: {json.dumps(done_data)}\n\n"
+                            
+                            # Final flush - send empty line to ensure SSE format is complete
+                            yield "\n"
+                            
+                            logger.info("Streaming completed successfully", conversation_id=conversation_id)
                             break
                         elif chunk_type == "error":
                             # Error occurred

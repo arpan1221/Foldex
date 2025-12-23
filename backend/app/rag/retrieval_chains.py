@@ -794,6 +794,11 @@ class RetrievalQAChain:
                                             if hasattr(doc, "page_content")
                                             else str(doc)[:200]
                                         ),
+                                        "chunk_content": (
+                                            doc.page_content
+                                            if hasattr(doc, "page_content")
+                                            else str(doc)
+                                        ),  # Full content for hover tooltip
                                         "source": metadata.get("source"),
                                         "file_path": metadata.get("file_path"),
                                         "mime_type": metadata.get("mime_type"),
@@ -916,6 +921,11 @@ class RetrievalQAChain:
                                         if hasattr(doc, "page_content")
                                         else str(doc)[:200]
                                     ),
+                                    "chunk_content": (
+                                        doc.page_content
+                                        if hasattr(doc, "page_content")
+                                        else str(doc)
+                                    ),  # Full content for hover tooltip
                                     "source": metadata.get("source"),
                                     "file_path": metadata.get("file_path"),
                                     "mime_type": metadata.get("mime_type"),
@@ -1036,6 +1046,12 @@ class RetrievalQAChain:
                     )
                 except Exception:
                     used_citations = []
+            
+            logger.info(
+                "Inline citation extraction completed",
+                answer_length=len(cleaned_answer),
+                citation_count=len(used_citations),
+            )
 
             logger.info(
                 "Chain streaming completed",
@@ -1154,6 +1170,13 @@ class HybridRetrievalChain:
         for doc in source_documents:
             metadata = doc.metadata if hasattr(doc, "metadata") else {}
 
+            # Get full chunk content
+            chunk_content = (
+                doc.page_content
+                if hasattr(doc, "page_content")
+                else str(doc)
+            )
+            
             citation = {
                 "file_id": metadata.get("file_id"),
                 "file_name": metadata.get("file_name", "Unknown"),
@@ -1162,7 +1185,8 @@ class HybridRetrievalChain:
                 "chunk_index": metadata.get("chunk_index"),
                 "start_time": metadata.get("start_time"),
                 "end_time": metadata.get("end_time"),
-                "content_preview": doc.page_content[:200] if hasattr(doc, "page_content") else str(doc)[:200],
+                "content_preview": chunk_content[:200],  # Short preview
+                "chunk_content": chunk_content,  # Full content for hover tooltip
                 "metadata": metadata,
             }
 

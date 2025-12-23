@@ -371,16 +371,25 @@ class QueryNodes:
             all_chunks = state["retrieved_chunks"]
             graph_results = state["graph_traversal_results"]
 
-            # Build context documents
+            # Build context documents with deduplication by chunk_id
             context_documents = []
+            seen_chunk_ids = set()
 
             for chunk in all_chunks:
+                # Deduplicate by chunk_id - only add if not already seen
+                if chunk.chunk_id not in seen_chunk_ids:
                 context_documents.append({
                     "chunk_id": chunk.chunk_id,
                     "file_id": chunk.file_id,
                     "content": chunk.content[:500],  # Truncate for context
                     "metadata": chunk.metadata,
                 })
+                    seen_chunk_ids.add(chunk.chunk_id)
+                else:
+                    logger.debug(
+                        "Skipping duplicate chunk",
+                        chunk_id=chunk.chunk_id,
+                    )
 
             # Add graph traversal results
             for result in graph_results:
@@ -398,6 +407,7 @@ class QueryNodes:
             logger.debug(
                 "Context assembled",
                 document_count=len(context_documents),
+                unique_chunks=len(seen_chunk_ids),
             )
 
             return self.state_manager.update_state(state, updates)

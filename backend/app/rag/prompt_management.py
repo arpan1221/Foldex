@@ -434,11 +434,13 @@ Answer directly and clearly:"""
         if not documents:
             return folder_summary_text
 
-        # Group documents by file
+        # Group documents by file with deduplication by chunk_id
         from collections import defaultdict
         file_groups = defaultdict(list)
+        seen_chunk_ids = set()
+        chunk_idx = 0
 
-        for idx, doc in enumerate(documents, 1):
+        for doc in documents:
             # Handle both LangChain Documents and DocumentChunks
             if hasattr(doc, "page_content"):
                 content = doc.page_content
@@ -450,6 +452,22 @@ Answer directly and clearly:"""
                 content = str(doc)
                 metadata = {}
 
+            # Get chunk_id for deduplication
+            chunk_id = metadata.get("chunk_id")
+            
+            # Skip if this chunk_id has already been seen
+            if chunk_id and chunk_id in seen_chunk_ids:
+                logger.debug(
+                    "Skipping duplicate chunk in format_context",
+                    chunk_id=chunk_id,
+                )
+                continue
+            
+            # Mark chunk_id as seen
+            if chunk_id:
+                seen_chunk_ids.add(chunk_id)
+            
+            chunk_idx += 1
             file_name = metadata.get("file_name", "Unknown")
             page_number = metadata.get("page_number")
             start_time = metadata.get("start_time")
@@ -466,7 +484,7 @@ Answer directly and clearly:"""
 
             # Store with metadata for grouping
             file_groups[file_name].append({
-                "idx": idx,
+                "idx": chunk_idx,
                 "content": content,
                 "location": location,
             })

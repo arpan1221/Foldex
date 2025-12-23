@@ -76,6 +76,9 @@ def parse_inline_citations(
             file_id = meta.get("file_id", "")
             file_name = meta.get("file_name", "Unknown")
             
+            # Get chunk content for tooltip
+            chunk_content = meta.get("content") or meta.get("chunk_content") or meta.get("content_preview", "")
+            
             used_citations.append({
                 "chunk_id": chunk_id,
                 "citation_number": citation_num,
@@ -86,7 +89,8 @@ def parse_inline_citations(
                 "google_drive_url": meta.get("url") or meta.get("drive_url") or meta.get("google_drive_url"),
                 "mime_type": meta.get("mime_type"),  # Optional but helpful
                 "section": meta.get("section", ""),
-                "content_preview": meta.get("content_preview", "")[:200],
+                "content_preview": chunk_content[:200] if chunk_content else "",  # Short preview
+                "chunk_content": chunk_content,  # Full content for hover tooltip
                 "start_time": meta.get("start_time"),  # For audio/video
                 "end_time": meta.get("end_time"),  # For audio/video
             })

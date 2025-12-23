@@ -272,7 +272,7 @@ Output JSON now:"""
             # Use async invoke to avoid blocking the event loop
             response = await asyncio.wait_for(
                 self.llm.get_llm().ainvoke(prompt),
-                timeout=90.0  # Extended timeout (> 1 minute) for entity extraction
+                timeout=120.0  # Extended timeout (2 minutes) for entity extraction
             )
             
             # Extract content from response

@@ -470,15 +470,37 @@ class AdaptiveRetriever:
         Strategy:
         - Over-retrieve (top_k * 2)
         - Enforce moderate diversity: max 2 chunks per file
+        - For overview queries: ensure at least 1 chunk from each file
         - Balance relevance and diversity
         - Representative sampling
         """
         logger.info("🔍 Strategy: general_retrieval (balanced)")
         
+        # Detect if this is an overview/summary query
+        query_lower = query.lower()
+        is_overview_query = any(
+            keyword in query_lower
+            for keyword in [
+                "overview",
+                "summary",
+                "summarize",
+                "all files",
+                "folder contents",
+                "generic overview",
+                "what's in this folder",
+                "describe the folder",
+            ]
+        )
+        
         # Build filter (may include content-type if specified)
         filter_clause = self._build_filter(folder_id, understanding, apply_content_filter=True)
         
-        # Over-retrieve for diversity
+        # For overview queries, over-retrieve more aggressively to ensure we have candidates from all files
+        if is_overview_query:
+            over_retrieve_k = top_k * 4  # Much more aggressive over-retrieval
+            logger.info(f"   Overview query detected - over-retrieving: {over_retrieve_k} candidates")
+            logger.info("   Will ensure at least 1 chunk from each file")
+        else:
         over_retrieve_k = top_k * 2
         logger.info(f"   Over-retrieving: {over_retrieve_k} candidates")
         logger.info("   Enforcing moderate diversity: max 2 per file")
@@ -504,6 +526,12 @@ class AdaptiveRetriever:
         else:
             diverse_results = results
         
+        # For overview queries, use special diversity enforcement that ensures at least 1 chunk per file
+        if is_overview_query:
+            diverse_results = self._enforce_diversity_for_overview(
+                diverse_results, min_per_file=1, max_per_file=3, target_count=top_k
+            )
+        else:
         # Enforce moderate diversity: max 2 chunks per file
         diverse_results = self._enforce_diversity(diverse_results, max_per_file=2, target_count=top_k)
         
@@ -519,6 +547,7 @@ class AdaptiveRetriever:
             chunks_returned=len(chunks),
             files_retrieved_from=unique_files,
             file_distribution=file_counts,
+            is_overview_query=is_overview_query,
         )
         
         return RetrievalResult(
@@ -528,9 +557,10 @@ class AdaptiveRetriever:
                 "query_type": understanding.query_type.value,
                 "files_retrieved_from": unique_files,
                 "diversity_enforced": True,
-                "max_chunks_per_file": 2,
+                "max_chunks_per_file": 3 if is_overview_query else 2,
                 "file_distribution": file_counts,
                 "content_filter_applied": filter_clause.get("file_type") if filter_clause else None,
+                "is_overview_query": is_overview_query,
             },
         )
     
@@ -578,6 +608,95 @@ class AdaptiveRetriever:
                 "Diversity enforcement",
                 selected=len(selected),
                 skipped=skipped_count,
+                max_per_file=max_per_file,
+                file_distribution=file_counts,
+            )
+        
+        return selected
+    
+    def _enforce_diversity_for_overview(
+        self,
+        results: List[Tuple[Document, float]],
+        min_per_file: int,
+        max_per_file: int,
+        target_count: int,
+    ) -> List[Tuple[Document, float]]:
+        """
+        Enforce diversity for overview queries: ensure at least min_per_file chunks from each file.
+        
+        Algorithm:
+        1. First pass: Ensure at least min_per_file chunks from each unique file
+        2. Second pass: Fill remaining slots up to max_per_file per file
+        3. Continue until target_count reached
+        
+        Args:
+            results: List of (Document, score) tuples in relevance order
+            min_per_file: Minimum chunks required per file (typically 1 for overview)
+            max_per_file: Maximum chunks allowed per file
+            target_count: Target number of chunks to return
+            
+        Returns:
+            List of diverse (Document, score) tuples with guaranteed representation from all files
+        """
+        selected: List[Tuple[Document, float]] = []
+        file_counts: Dict[str, int] = {}
+        
+        # First, identify all unique files in results
+        unique_files = set()
+        for doc, _ in results:
+            file_id = doc.metadata.get("file_id") or doc.metadata.get("file_name", "unknown")
+            unique_files.add(file_id)
+        
+        logger.debug(
+            "Overview diversity enforcement",
+            unique_files=len(unique_files),
+            total_candidates=len(results),
+            min_per_file=min_per_file,
+            max_per_file=max_per_file,
+        )
+        
+        # First pass: Ensure minimum representation from each file
+        for doc, score in results:
+            file_id = doc.metadata.get("file_id") or doc.metadata.get("file_name", "unknown")
+            current_count = file_counts.get(file_id, 0)
+            
+            # If this file hasn't met minimum yet, add it
+            if current_count < min_per_file:
+                selected.append((doc, score))
+                file_counts[file_id] = current_count + 1
+        
+        # Track selected chunk IDs to avoid duplicates
+        selected_chunk_ids = {
+            doc.metadata.get("chunk_id") or str(id(doc))
+            for doc, _ in selected
+        }
+        
+        # Second pass: Fill remaining slots up to max_per_file, prioritizing relevance
+        for doc, score in results:
+            if len(selected) >= target_count:
+                break
+            
+            chunk_id = doc.metadata.get("chunk_id") or str(id(doc))
+            # Skip if already selected
+            if chunk_id in selected_chunk_ids:
+                continue
+            
+            file_id = doc.metadata.get("file_id") or doc.metadata.get("file_name", "unknown")
+            current_count = file_counts.get(file_id, 0)
+            
+            # Add if we haven't hit max_per_file yet
+            if current_count < max_per_file:
+                selected.append((doc, score))
+                selected_chunk_ids.add(chunk_id)
+                file_counts[file_id] = current_count + 1
+        
+        skipped_count = len(results) - len(selected)
+        if skipped_count > 0:
+            logger.debug(
+                "Overview diversity enforcement complete",
+                selected=len(selected),
+                skipped=skipped_count,
+                min_per_file=min_per_file,
                 max_per_file=max_per_file,
                 file_distribution=file_counts,
             )

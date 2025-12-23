@@ -137,6 +137,11 @@ CITATION REQUIREMENTS:
                         if hasattr(doc, "page_content")
                         else ""
                     ),
+                    "chunk_content": (
+                        doc.page_content
+                        if hasattr(doc, "page_content")
+                        else str(doc)
+                    ),  # Full content for hover tooltip
                     "source": metadata.get("source"),
                     "file_path": metadata.get("file_path"),
                     "mime_type": metadata.get("mime_type"),

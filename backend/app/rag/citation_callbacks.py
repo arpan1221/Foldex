@@ -122,6 +122,13 @@ class CitationCallbackHandler(BaseCallbackHandler):
             else:
                 return None
 
+            # Get full chunk content
+            chunk_content = (
+                document.page_content
+                if hasattr(document, "page_content")
+                else str(document)
+            )
+            
             citation = {
                 "file_id": metadata.get("file_id"),
                 "file_name": metadata.get("file_name", "Unknown"),
@@ -130,11 +137,8 @@ class CitationCallbackHandler(BaseCallbackHandler):
                 "chunk_index": metadata.get("chunk_index"),
                 "start_time": metadata.get("start_time"),
                 "end_time": metadata.get("end_time"),
-                "content_preview": (
-                    document.page_content[:200]
-                    if hasattr(document, "page_content")
-                    else str(document)[:200]
-                ),
+                "content_preview": chunk_content[:200],  # Short preview
+                "chunk_content": chunk_content,  # Full content for hover tooltip
                 "metadata": metadata,
             }
 

@@ -637,6 +637,7 @@ class LangChainRAGService:
                 "formatted": citation.formatted,
                 "file_type": citation.file_type.value if hasattr(citation.file_type, "value") else str(citation.file_type),
                 "content_preview": citation.excerpt[:200],  # Use excerpt as preview
+                "chunk_content": citation.excerpt,  # Full excerpt for hover tooltip
                 "relevance_score": citation.confidence,  # Use confidence as relevance
                 "google_drive_url": google_drive_url,  # Always include URL
                 "mime_type": None,  # Could be inferred from file_type if needed
@@ -681,6 +682,13 @@ class LangChainRAGService:
             page_number = metadata.get("page_number")
             page_display = f"p.{page_number}" if page_number else None
 
+            # Get full chunk content for hover tooltip
+            chunk_content = (
+                doc.page_content
+                if hasattr(doc, "page_content")
+                else str(doc)
+            )
+            
             # Extract all relevant metadata for citations
             citation = {
                 "citation_number": idx,  # Assign sequential citation numbers
@@ -693,11 +701,8 @@ class LangChainRAGService:
                 "start_time": metadata.get("start_time") or metadata.get("segment_start"),
                 "end_time": metadata.get("end_time") or metadata.get("segment_end"),
                 "relevance_score": metadata.get("relevance_score"),
-                "content_preview": (
-                    doc.page_content[:200]
-                    if hasattr(doc, "page_content")
-                    else str(doc)[:200]
-                ),
+                "content_preview": chunk_content[:200],  # Short preview for lists
+                "chunk_content": chunk_content,  # Full chunk content for hover tooltip
                 "google_drive_url": google_drive_url,  # Always include URL
                 "source": metadata.get("source"),
                 "file_path": metadata.get("file_path"),

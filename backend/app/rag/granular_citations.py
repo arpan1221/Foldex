@@ -128,8 +128,9 @@ class GranularCitationExtractor:
                 # URLs
                 "google_drive_url": google_drive_url,  # Always include URL (can be None)
 
-                # Content preview
+                # Content preview and full chunk content
                 "content_preview": quote_data["exact_quote"][:200] if quote_data.get("exact_quote") else "",
+                "chunk_content": doc.page_content if hasattr(doc, "page_content") else str(doc),  # Full chunk for tooltip
 
                 # Full metadata
                 "metadata": metadata,

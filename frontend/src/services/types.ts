@@ -77,7 +77,8 @@ export interface Citation {
   // Legacy fields
   confidence?: number;
   google_drive_url?: string;  // Clickable link to source file
-  content_preview?: string;  // Preview of the cited content
+  content_preview?: string;  // Preview of the cited content (short, for lists)
+  chunk_content?: string;  // Full chunk content for hover tooltip
 
   // Full metadata
   metadata?: Record<string, any>;

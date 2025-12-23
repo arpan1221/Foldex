@@ -548,17 +548,23 @@ class ChatService {
       }
 
       let buffer = '';
+      let streamComplete = false;
 
       while (true) {
         const { done, value } = await reader.read();
         
-        if (done) break;
-
+        // Decode any remaining data
+        if (value) {
         buffer += decoder.decode(value, { stream: true });
+        }
+
+        // Process all complete lines in buffer
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
         for (const line of lines) {
+          if (line.trim() === '') continue; // Skip empty lines
+          
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
@@ -573,15 +579,63 @@ class ChatService {
               } else if (data.type === 'citations') {
                 onCitations(data.citations || []);
               } else if (data.type === 'done') {
+                streamComplete = true;
+                // Process any remaining buffer before completing
+                if (buffer.trim()) {
+                  // Try to process remaining buffer
+                  const remainingLines = buffer.split('\n').filter(l => l.trim());
+                  for (const remainingLine of remainingLines) {
+                    if (remainingLine.startsWith('data: ')) {
+                      try {
+                        const remainingData = JSON.parse(remainingLine.slice(6));
+                        if (remainingData.type === 'token') {
+                          onToken(remainingData.content);
+                        }
+                      } catch (e) {
+                        console.warn('Failed to parse remaining buffer data:', e);
+                      }
+                    }
+                  }
+                }
                 onDone(data.conversation_id, data.debug);
                 return;
               } else if (data.type === 'error') {
                 throw new APIException(data.content || 'Streaming error');
               }
             } catch (parseError) {
-              console.error('Failed to parse SSE data:', parseError);
+              console.error('Failed to parse SSE data:', parseError, 'Line:', line);
             }
           }
+        }
+
+        // If stream is done, process any remaining buffer and exit
+        if (done) {
+          // Process any remaining data in buffer
+          if (buffer.trim()) {
+            const remainingLines = buffer.split('\n').filter(l => l.trim());
+            for (const remainingLine of remainingLines) {
+              if (remainingLine.startsWith('data: ')) {
+                try {
+                  const remainingData = JSON.parse(remainingLine.slice(6));
+                  if (remainingData.type === 'token') {
+                    onToken(remainingData.content);
+                  } else if (remainingData.type === 'done' && !streamComplete) {
+                    streamComplete = true;
+                    onDone(remainingData.conversation_id, remainingData.debug);
+                    return;
+                  }
+                } catch (e) {
+                  console.warn('Failed to parse final buffer data:', e);
+                }
+              }
+            }
+          }
+          // If we didn't receive a 'done' signal, something went wrong
+          if (!streamComplete) {
+            console.warn('Stream ended without done signal, buffer:', buffer);
+            onError(new APIException('Stream ended unexpectedly'));
+          }
+          break;
         }
       }
     } catch (error) {

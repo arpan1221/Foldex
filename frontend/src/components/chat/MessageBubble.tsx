@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChatMessage } from '../../services/types';
 import CitationDisplay from './CitationDisplay';
+import CitationTooltip from './CitationTooltip';
 import { formatDate } from '../../utils/formatters';
 import AIAssistantIcon from '../common/AIAssistantIcon';
 
@@ -58,21 +59,21 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isStreaming = fa
       const citationNumber = parseInt(match[1], 10);
       const citation = message.citations.find(c => c.citation_number === citationNumber);
 
-      // Add citation as clickable element
+      // Add citation as clickable element with hover tooltip
       if (citation) {
         parts.push(
-          <button
-            key={`cite-${match.index}`}
-            onClick={() => {
-              if (citation.google_drive_url) {
-                window.open(citation.google_drive_url, '_blank', 'noopener,noreferrer');
-              }
-            }}
-            title={`${citation.file_name}${citation.page_display ? `, ${citation.page_display}` : ''}`}
-            className="inline-flex items-center text-foldex-primary-400 hover:text-foldex-primary-300 hover:underline cursor-pointer font-medium mx-0.5"
-          >
-            [{citationNumber}]
-          </button>
+          <CitationTooltip key={`cite-${match.index}`} citation={citation}>
+            <button
+              onClick={() => {
+                if (citation.google_drive_url) {
+                  window.open(citation.google_drive_url, '_blank', 'noopener,noreferrer');
+                }
+              }}
+              className="inline-flex items-center text-foldex-primary-400 hover:text-foldex-primary-300 hover:underline cursor-pointer font-medium mx-0.5 transition-colors"
+            >
+              [{citationNumber}]
+            </button>
+          </CitationTooltip>
         );
       } else {
         // Citation not found, render as plain text

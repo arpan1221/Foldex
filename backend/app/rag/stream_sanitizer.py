@@ -112,6 +112,36 @@ class ThinkTagStreamFilter:
 
         return "".join(out)
 
+    def flush(self) -> str:
+        """Flush any remaining buffered content.
+        
+        This should be called when the stream ends to ensure no content
+        is lost in the buffer.
+        
+        Returns:
+            Any remaining safe content from the buffer
+        """
+        if not self._buf:
+            return ""
+        
+        # If we're in preface mode, just return the buffer (it's safe)
+        if self._preface_mode:
+            result = self._buf
+            self._buf = ""
+            self._preface_mode = False
+            return result
+        
+        # If we're in think mode, drop everything (it's thinking content)
+        if self._in_think:
+            self._buf = ""
+            self._in_think = False
+            return ""
+        
+        # Otherwise, return the buffer (it's safe content)
+        result = self._buf
+        self._buf = ""
+        return result
+
     @staticmethod
     def _find_first(text: str, tags: Iterable[str]) -> Optional[_TagMatch]:
         low = text.lower()

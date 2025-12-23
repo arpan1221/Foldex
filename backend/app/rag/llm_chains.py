@@ -104,6 +104,23 @@ else:
                 response: LLM result
                 **kwargs: Additional arguments
             """
+            # CRITICAL: Flush any remaining content from the filter buffer
+            # The filter keeps a tail buffer to catch split tags, but when the stream ends,
+            # we need to flush it to ensure no content is lost
+            remaining = self._filter.flush()
+            if remaining:
+                logger.debug(
+                    "Flushed remaining content from filter buffer",
+                    remaining_length=len(remaining),
+                    remaining_preview=remaining[:100]
+                )
+                self.tokens.append(remaining)
+                if self.callback:
+                    try:
+                        self.callback(remaining)
+                    except Exception as e:
+                        logger.error("Streaming callback error during flush", error=str(e), exc_info=True)
+            
             logger.debug("LLM response completed", token_count=len(self.tokens))
 
         def get_full_response(self) -> str:
@@ -122,7 +139,7 @@ class OllamaLLM:
         self,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: float = 0.3,
+        temperature: float = 0.1,
         timeout: Optional[int] = None,
     ):
         """Initialize Ollama LLM.
@@ -130,7 +147,7 @@ class OllamaLLM:
         Args:
             model: Ollama model name (default: from settings)
             base_url: Ollama base URL (default: from settings)
-            temperature: Sampling temperature (0.3 optimized for Llama 3.2:3b factual responses)
+            temperature: Sampling temperature (0.1 optimized for factual, deterministic responses)
             timeout: Request timeout in seconds
 
         Raises:
