@@ -2,6 +2,8 @@
 
 **Foldex** is a local-first multimodal RAG (Retrieval-Augmented Generation) system that transforms Google Drive folders into intelligent conversation interfaces. Ask questions, find files, and get insights from your documents using AI—all running locally on your machine.
 
+## [Demo Video](https://drive.google.com/file/d/14Lsz8BNCr6aVnMt1kJ9OJyXlXx4fWH4E/view?usp=drive_link)
+
 ## 🚀 Quick Start
 
 ```bash
